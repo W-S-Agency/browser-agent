@@ -1,0 +1,27 @@
+{
+  "name": "@ws-workspace/browser-agent-bridge",
+  "version": "1.0.0",
+  "description": "WebSocket Bridge Server for Browser Agent",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "browser-agent",
+    "websocket",
+    "mcp",
+    "automation"
+  ],
+  "author": "WS Agency",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "node-windows": "^1.0.0-beta.8",
+    "winston": "^3.19.0",
+    "winston-daily-rotate-file": "^5.0.0",
+    "ws": "^8.16.0"
+  }
+}

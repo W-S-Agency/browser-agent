@@ -1,0 +1,25 @@
+{
+  "name": "@ws-workspace/browser-agent-mcp",
+  "version": "1.0.0",
+  "description": "MCP Server for Browser Agent - provides tools for WS Workspace",
+  "type": "module",
+  "bin": {
+    "browser-agent-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "prepare": "npm run build"
+  },
+  "keywords": ["mcp", "browser-agent", "automation", "ws-workspace"],
+  "author": "WS Agency",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "axios": "^1.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "typescript": "^5.3.3"
+  }
+}
