@@ -90,6 +90,78 @@
       font-size: 11px;
     }
 
+    .alias-section {
+      margin-top: 16px;
+      padding: 12px;
+      background: #f9f9f9;
+      border-radius: 8px;
+    }
+
+    .alias-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      margin-bottom: 8px;
+      color: #555;
+    }
+
+    .alias-input-group {
+      display: flex;
+      gap: 8px;
+    }
+
+    .alias-input {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    .alias-input:focus {
+      outline: none;
+      border-color: #1976d2;
+    }
+
+    .alias-button {
+      padding: 8px 16px;
+      background: #1976d2;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .alias-button:hover {
+      background: #1565c0;
+    }
+
+    .alias-button:active {
+      background: #0d47a1;
+    }
+
+    .alias-button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .alias-status {
+      margin-top: 8px;
+      font-size: 11px;
+      min-height: 16px;
+    }
+
+    .alias-status.success {
+      color: #2e7d32;
+    }
+
+    .alias-status.error {
+      color: #c62828;
+    }
+
     .footer {
       margin-top: 16px;
       text-align: center;
@@ -127,6 +199,15 @@
       <span class="label">Version:</span>
       <span class="value">1.0.0</span>
     </div>
+  </div>
+
+  <div class="alias-section">
+    <label for="aliasInput" class="alias-label">Profile Alias:</label>
+    <div class="alias-input-group">
+      <input type="text" id="aliasInput" class="alias-input" placeholder="e.g., work, personal, comet-ads" maxlength="50">
+      <button id="saveAlias" class="alias-button">Save</button>
+    </div>
+    <div id="aliasStatus" class="alias-status"></div>
   </div>
 
   <div class="footer">

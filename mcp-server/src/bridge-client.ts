@@ -14,6 +14,7 @@ export interface BridgeHealth {
 
 export interface Profile {
   id: string;
+  alias: string | null;
   browserInfo: any;
   isActive: boolean;
   isConnected: boolean;

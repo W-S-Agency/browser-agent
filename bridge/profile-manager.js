@@ -7,12 +7,13 @@ import logger from './logger.js';
 export class ProfileManager {
   constructor() {
     this.profiles = new Map();
+    this.aliases = new Map(); // Map alias -> profileId
     this.pendingCommands = new Map();
     this.activeProfileId = null;
   }
 
   // Register new profile
-  registerProfile({ profileId, authToken, browserInfo, websocket }) {
+  registerProfile({ profileId, alias, authToken, browserInfo, websocket }) {
     // Validate auth token (basic validation for MVP)
     if (!authToken || authToken.length < 16) {
       throw new Error('Invalid auth token');
@@ -20,6 +21,7 @@ export class ProfileManager {
 
     const profile = {
       id: profileId,
+      alias: alias || null,
       authToken,
       browserInfo,
       websocket,
@@ -29,6 +31,12 @@ export class ProfileManager {
     };
 
     this.profiles.set(profileId, profile);
+
+    // Store alias mapping if provided
+    if (alias) {
+      this.aliases.set(alias, profileId);
+      logger.info('[ProfileManager] Registered alias', { alias, profileId });
+    }
 
     // Set as active if first profile
     if (this.profiles.size === 1) {
@@ -60,9 +68,59 @@ export class ProfileManager {
     }
   }
 
-  // Get profile by ID
-  getProfile(profileId) {
-    return this.profiles.get(profileId);
+  // Get profile by ID or alias
+  getProfile(profileIdOrAlias) {
+    // Try direct profileId lookup first
+    let profile = this.profiles.get(profileIdOrAlias);
+    if (profile) return profile;
+
+    // Try alias lookup
+    const resolvedId = this.aliases.get(profileIdOrAlias);
+    if (resolvedId) {
+      return this.profiles.get(resolvedId);
+    }
+
+    return null;
+  }
+
+  // Resolve alias to profileId
+  resolveProfileId(profileIdOrAlias) {
+    // Check if it's already a valid profileId
+    if (this.profiles.has(profileIdOrAlias)) {
+      return profileIdOrAlias;
+    }
+
+    // Try to resolve as alias
+    const resolvedId = this.aliases.get(profileIdOrAlias);
+    if (resolvedId && this.profiles.has(resolvedId)) {
+      return resolvedId;
+    }
+
+    return null;
+  }
+
+  // Update profile alias
+  updateAlias(profileId, newAlias) {
+    const profile = this.profiles.get(profileId);
+    if (!profile) {
+      throw new Error(`Profile not found: ${profileId}`);
+    }
+
+    // Remove old alias mapping if exists
+    if (profile.alias) {
+      this.aliases.delete(profile.alias);
+    }
+
+    // Update profile with new alias
+    profile.alias = newAlias;
+
+    // Add new alias mapping
+    if (newAlias) {
+      this.aliases.set(newAlias, profileId);
+      logger.info('[ProfileManager] Updated alias', { profileId, newAlias });
+    }
+
+    return profile;
   }
 
   // Get active profile
@@ -101,13 +159,15 @@ export class ProfileManager {
     return Array.from(this.profiles.values());
   }
 
-  // Execute command on profile
-  executeCommand(profileId, command, timeout = 30000) {
-    const profile = this.profiles.get(profileId);
-    if (!profile) {
-      throw new Error(`Profile not found: ${profileId}`);
+  // Execute command on profile (supports alias resolution)
+  executeCommand(profileIdOrAlias, command, timeout = 30000) {
+    // Resolve alias to profileId
+    const profileId = this.resolveProfileId(profileIdOrAlias);
+    if (!profileId) {
+      throw new Error(`Profile not found: ${profileIdOrAlias}`);
     }
 
+    const profile = this.profiles.get(profileId);
     if (!profile.isConnected) {
       throw new Error(`Profile not connected: ${profileId}`);
     }

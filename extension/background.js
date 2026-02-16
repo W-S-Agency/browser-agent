@@ -10,6 +10,7 @@ let websocket = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 let profileId = null;
+let profileAlias = null;
 let authToken = null;
 
 // Keep Service Worker alive
@@ -33,14 +34,18 @@ init();
 async function init() {
   console.log('[Browser Agent] Initializing...');
 
-  // Load stored profile ID
-  const stored = await chrome.storage.local.get(['profileId']);
+  // Load stored profile ID and alias
+  const stored = await chrome.storage.local.get(['profileId', 'profileAlias']);
   profileId = stored.profileId || generateProfileId();
+  profileAlias = stored.profileAlias || null;
 
   // Save profile ID to storage
   await chrome.storage.local.set({ profileId });
 
   console.log('[Browser Agent] Profile ID:', profileId);
+  if (profileAlias) {
+    console.log('[Browser Agent] Profile Alias:', profileAlias);
+  }
 
   // Fetch auth token from Bridge Server
   await fetchAuthToken();
@@ -121,6 +126,7 @@ function handleConnect() {
   sendMessage({
     type: 'register',
     profileId,
+    alias: profileAlias,
     authToken,
     browserInfo: {
       name: 'chrome',
@@ -471,8 +477,48 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getStatus') {
     sendResponse({
       connected: websocket && websocket.readyState === WebSocket.OPEN,
-      profileId
+      profileId,
+      alias: profileAlias
     });
   }
+
+  if (request.action === 'setAlias') {
+    (async () => {
+      try {
+        const alias = request.alias;
+
+        // Validate alias format
+        if (!/^[a-z0-9-]+$/.test(alias)) {
+          sendResponse({
+            success: false,
+            error: 'Alias must contain only lowercase letters, numbers, and hyphens'
+          });
+          return;
+        }
+
+        // Save alias to storage
+        profileAlias = alias;
+        await chrome.storage.local.set({ profileAlias: alias });
+
+        console.log('[Browser Agent] Alias saved:', alias);
+
+        // If connected, send alias update to Bridge Server
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+          sendMessage({
+            type: 'update_alias',
+            profileId,
+            alias
+          });
+        }
+
+        sendResponse({ success: true, alias });
+      } catch (error) {
+        console.error('[Browser Agent] Failed to save alias:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true; // Keep channel open for async response
+  }
+
   return true;
 });

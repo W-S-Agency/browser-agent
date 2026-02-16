@@ -57,18 +57,45 @@ wss.on('connection', (ws, req) => {
       if (message.type === 'register') {
         profile = profileManager.registerProfile({
           profileId: message.profileId,
+          alias: message.alias,
           authToken: message.authToken,
           browserInfo: message.browserInfo,
           websocket: ws
         });
 
-        logger.info('[Bridge] Profile registered:', profile.id);
+        logger.info('[Bridge] Profile registered', {
+          id: profile.id,
+          alias: profile.alias || 'none'
+        });
 
         // Send confirmation
         ws.send(JSON.stringify({
           type: 'registered',
           success: true,
           profileId: profile.id
+        }));
+
+        return;
+      }
+
+      // Handle alias update
+      if (message.type === 'update_alias') {
+        if (!profile) {
+          logger.warn('[Bridge] Received update_alias before registration');
+          return;
+        }
+
+        profileManager.updateAlias(message.profileId, message.alias);
+
+        logger.info('[Bridge] Profile alias updated', {
+          id: message.profileId,
+          alias: message.alias
+        });
+
+        // Send confirmation
+        ws.send(JSON.stringify({
+          type: 'alias_updated',
+          success: true
         }));
 
         return;
@@ -159,12 +186,63 @@ app.get('/profiles', (req, res) => {
     success: true,
     profiles: profiles.map(p => ({
       id: p.id,
+      alias: p.alias || null,
       browserInfo: p.browserInfo,
       isActive: p.isActive,
       isConnected: p.isConnected,
       lastSeen: p.lastSeen
     }))
   });
+});
+
+// Set profile alias
+app.post('/profiles/:profileId/alias', async (req, res) => {
+  try {
+    const { profileId } = req.params;
+    const { alias } = req.body;
+
+    if (!alias) {
+      return res.status(400).json({
+        success: false,
+        error: 'Alias is required'
+      });
+    }
+
+    // Validate alias format
+    if (!/^[a-z0-9-]+$/.test(alias)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Alias must contain only lowercase letters, numbers, and hyphens'
+      });
+    }
+
+    // Resolve profileId (in case it's already an alias)
+    const resolvedId = profileManager.resolveProfileId(profileId);
+    if (!resolvedId) {
+      return res.status(404).json({
+        success: false,
+        error: `Profile not found: ${profileId}`
+      });
+    }
+
+    // Update alias
+    const profile = profileManager.updateAlias(resolvedId, alias);
+
+    res.json({
+      success: true,
+      profile: {
+        id: profile.id,
+        alias: profile.alias
+      }
+    });
+
+  } catch (error) {
+    logger.error('[Bridge] Failed to set alias:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 app.get('/health', (req, res) => {

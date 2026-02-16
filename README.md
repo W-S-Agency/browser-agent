@@ -9,6 +9,7 @@ Production-ready browser automation system with authentication, logging, auto-re
 - ✅ **Auto-Reconnect** - Exponential backoff (1s → 30s max)
 - ✅ **Auto-Start** - Windows Service / macOS LaunchAgent
 - ✅ **Multiple Profiles** - Chrome, Comet, Arc, Brave - different user profiles
+- ✅ **Profile Aliases** - Use friendly names like "work", "personal" instead of IDs
 - ✅ **Cross-Platform** - Windows & macOS support
 - ✅ **Production Stability** - Crash recovery, health checks
 
@@ -103,33 +104,37 @@ All Chromium-based browsers supported via Chrome Extension API.
 
 ## 📊 Available Tools
 
-```javascript
-// Navigation
-browser_navigate({ url: "https://example.com" })
+All tools support **profile aliases** - use friendly names like "work" or "personal" instead of full profile IDs.
 
-// JavaScript execution
-browser_execute_js({ code: "document.title" })
+```javascript
+// Navigation (with alias)
+browser_navigate({ profileId: "work", url: "https://example.com" })
+
+// JavaScript execution (with alias)
+browser_execute_js({ profileId: "work", code: "document.title" })
 
 // Element interaction
-browser_click({ selector: ".button" })
-browser_type({ selector: "#input", text: "Hello" })
+browser_click({ profileId: "work", selector: ".button" })
+browser_type({ profileId: "work", selector: "#input", text: "Hello" })
 
 // Screenshots
-browser_screenshot({ fullPage: true })
+browser_screenshot({ profileId: "work", fullPage: true })
 
 // Data extraction
-browser_extract({ selector: ".product" })
-browser_get_text({ selector: "h1" })
+browser_extract({ profileId: "work", selector: ".product" })
+browser_get_text({ profileId: "work", selector: "h1" })
 
 // Tab management
-browser_list_tabs()
-browser_switch_tab({ tabId: 12345 })
-browser_new_tab({ url: "https://example.com" })
-browser_close_tab({ tabId: 12345 })
+browser_list_tabs({ profileId: "work" })
+browser_switch_tab({ profileId: "work", tabId: 12345 })
+browser_new_tab({ profileId: "work", url: "https://example.com" })
+browser_close_tab({ profileId: "work", tabId: 12345 })
 
 // Profile management
 browser_list_profiles()
 ```
+
+**👉 See [ALIASES.md](ALIASES.md) for full profile alias documentation**
 
 ## 🔒 Security
 
@@ -148,6 +153,7 @@ browser_list_profiles()
 
 - **[Windows Setup](PRODUCTION-README.md)** - Full Windows installation guide
 - **[macOS Setup](MACOS-SETUP.md)** - Full macOS installation guide
+- **[Profile Aliases](ALIASES.md)** - Using friendly names for profiles (work, personal, etc.)
 
 ## 🧪 Testing
 
