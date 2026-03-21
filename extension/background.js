@@ -32,9 +32,20 @@ let keepAliveInterval = null;
 
 function startKeepAlive() {
   if (keepAliveInterval) return;
-  keepAliveInterval = setInterval(() => {
+  // Keep Service Worker alive more aggressively (every 15s instead of 20s)
+  // Also check WebSocket health on each tick
+  keepAliveInterval = setInterval(async () => {
     chrome.runtime.getPlatformInfo(() => {});
-  }, 20000);
+
+    // If WebSocket died silently, reconnect
+    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+      console.log('[Browser Agent v2] Keep-alive detected dead WebSocket, reconnecting...');
+      if (!reconnectTimer) {
+        await fetchAuthToken();
+        connectToBridge();
+      }
+    }
+  }, 15000);
 }
 
 // Initialize on extension install/startup
