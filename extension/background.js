@@ -22,6 +22,10 @@ let profileId = null;
 let profileAlias = null;
 let authToken = null;
 
+// === Action Log (for Side Panel) ===
+const MAX_LOG_ENTRIES = 50;
+let actionLog = [];
+
 // Keep Service Worker alive
 let keepAliveInterval = null;
 
@@ -135,13 +139,66 @@ async function handleMessage(event) {
     message = JSON.parse(event.data);
     if (!message.id) return; // Ignore non-command messages
 
-    console.log('[Browser Agent v2] Command:', message.type);
+    const commandType = message.type;
+    const detail = formatCommandDetail(message);
+    console.log('[Browser Agent v2] Command:', commandType);
+
+    // Log: running
+    logAction(commandType, 'running', detail);
+
     const result = await executeCommand(message);
+
+    // Log: success
+    logAction(commandType, 'success', detail);
 
     sendMessage({ id: message.id, success: true, result });
   } catch (error) {
     console.error('[Browser Agent v2] Command failed:', error);
+
+    // Log: error
+    logAction(message?.type || 'unknown', 'error', error.message);
+
     sendMessage({ id: message?.id, success: false, error: error.message });
+  }
+}
+
+function logAction(action, status, detail) {
+  const entry = {
+    action,
+    status,
+    detail: detail || '',
+    timestamp: Date.now()
+  };
+
+  actionLog.push(entry);
+  if (actionLog.length > MAX_LOG_ENTRIES) {
+    actionLog = actionLog.slice(-MAX_LOG_ENTRIES);
+  }
+
+  // Broadcast to side panel
+  chrome.runtime.sendMessage({ type: 'actionLog', entry }).catch(() => {});
+}
+
+function formatCommandDetail(command) {
+  const p = command.params || {};
+  switch (command.type) {
+    case 'navigate': return p.url || '';
+    case 'click': return p.selector || '';
+    case 'click_ref': return p.ref || '';
+    case 'type': return `${p.selector} = "${(p.text || '').substring(0, 30)}"`;
+    case 'form_input': return `${p.ref} = "${(p.value || '').substring(0, 30)}"`;
+    case 'find': return `"${p.query || ''}"`;
+    case 'screenshot': return p.fullPage ? 'fullPage' : 'viewport';
+    case 'screenshot_element': return p.ref || p.selector || '';
+    case 'scroll': return `${p.direction || 'down'} ${p.amount || 500}px`;
+    case 'scroll_to': return p.ref || '';
+    case 'execute_js': return (p.code || '').substring(0, 40);
+    case 'extract_design': return p.selector || 'body';
+    case 'extract_seo': return 'full audit';
+    case 'mouse_click': return `(${p.x}, ${p.y})`;
+    case 'keyboard_key': return p.key || '';
+    case 'keyboard_type': return `"${(p.text || '').substring(0, 30)}"`;
+    default: return '';
   }
 }
 
@@ -551,6 +608,9 @@ function scheduleReconnect() {
 
 // === Popup Communication ===
 
+// Open side panel when extension icon is clicked
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getStatus') {
     (async () => {
@@ -561,9 +621,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         alias: profileAlias,
         version: '2.0.0',
         agentTabs: agentTabs.length,
+        agentTabsList: agentTabs,
         groupId: tabGroupManager.groupId
       });
     })();
+    return true;
+  }
+
+  if (request.action === 'getActionLog') {
+    sendResponse({ entries: actionLog.slice(-30) });
     return true;
   }
 

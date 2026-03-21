@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Browser Agent</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      color: #e0e0e0;
+      background: #1a1a2e;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* === Header === */
+    .header {
+      padding: 16px;
+      background: #16213e;
+      border-bottom: 1px solid #0f3460;
+      flex-shrink: 0;
+    }
+
+    .header-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .version {
+      font-size: 11px;
+      color: #888;
+      font-weight: 400;
+    }
+
+    /* === Connection Status === */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+
+    .status-bar.connected {
+      background: rgba(76, 175, 80, 0.15);
+      color: #81c784;
+    }
+
+    .status-bar.disconnected {
+      background: rgba(244, 67, 54, 0.15);
+      color: #ef9a9a;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .status-dot.connected { background: #4caf50; }
+    .status-dot.disconnected { background: #f44336; animation: pulse 2s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .status-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .status-label { font-weight: 500; }
+    .status-detail { font-size: 11px; opacity: 0.7; }
+
+    /* === Sections === */
+    .section {
+      padding: 12px 16px;
+      border-bottom: 1px solid #0f3460;
+    }
+
+    .section-header {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #888;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .section-count {
+      background: #0f3460;
+      color: #e0e0e0;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-size: 10px;
+    }
+
+    /* === Agent Tabs === */
+    .tab-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .tab-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.03);
+      cursor: default;
+      font-size: 12px;
+    }
+
+    .tab-item:hover {
+      background: rgba(255,255,255,0.06);
+    }
+
+    .tab-favicon {
+      width: 16px;
+      height: 16px;
+      border-radius: 2px;
+      flex-shrink: 0;
+      background: #0f3460;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+    }
+
+    .tab-title {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tab-empty {
+      color: #555;
+      font-style: italic;
+      padding: 8px 0;
+      font-size: 12px;
+    }
+
+    /* === Action Log === */
+    .log-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 16px 16px;
+    }
+
+    .log-entry {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      font-size: 12px;
+    }
+
+    .log-icon {
+      flex-shrink: 0;
+      width: 18px;
+      text-align: center;
+      font-size: 12px;
+      padding-top: 1px;
+    }
+
+    .log-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .log-action {
+      color: #90caf9;
+      font-family: 'SF Mono', Menlo, Consolas, monospace;
+      font-size: 11px;
+    }
+
+    .log-detail {
+      color: #888;
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .log-time {
+      color: #555;
+      font-size: 10px;
+      flex-shrink: 0;
+      font-family: monospace;
+    }
+
+    .log-entry.success .log-icon { color: #81c784; }
+    .log-entry.error .log-icon { color: #ef9a9a; }
+    .log-entry.running .log-icon { color: #ffb74d; }
+
+    /* === Profile === */
+    .profile-section {
+      padding: 12px 16px;
+      background: #16213e;
+      border-top: 1px solid #0f3460;
+      flex-shrink: 0;
+      font-size: 11px;
+      color: #888;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .profile-name { color: #90caf9; font-weight: 500; }
+
+    /* === Scrollbar === */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-top">
+      <div class="title">
+        Browser Agent
+        <span class="version">v2.0</span>
+      </div>
+    </div>
+    <div id="statusBar" class="status-bar disconnected">
+      <div class="status-dot disconnected"></div>
+      <div class="status-info">
+        <span class="status-label">Connecting...</span>
+        <span class="status-detail" id="statusDetail"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Tabs -->
+  <div class="section">
+    <div class="section-header">
+      Agent Tabs
+      <span class="section-count" id="tabCount">0</span>
+    </div>
+    <div id="tabList" class="tab-list">
+      <div class="tab-empty">No agent tabs open</div>
+    </div>
+  </div>
+
+  <!-- Action Log -->
+  <div class="section" style="flex-shrink: 0;">
+    <div class="section-header">
+      Actions
+      <span class="section-count" id="logCount">0</span>
+    </div>
+  </div>
+  <div class="log-container" id="logContainer">
+    <div class="tab-empty" id="logEmpty">Waiting for commands...</div>
+  </div>
+
+  <!-- Profile Footer -->
+  <div class="profile-section">
+    <span>Profile: <span class="profile-name" id="profileName">—</span></span>
+    <span id="bridgeStatus">Bridge: localhost</span>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
