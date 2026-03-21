@@ -1,6 +1,17 @@
-# Browser Agent - Setup Guide
+# Browser Agent v2.0 - Setup Guide
 
 **Complete installation guide for WS Agency team**
+
+## What's New in v2.0
+
+- **Tab Group Isolation** — Agent works in "🤖 Agent" group, never touches your tabs
+- **CDP Screenshots** — No more browser focus hijacking
+- **Accessibility Tree** — Read pages as documents with ref IDs (38 tools total)
+- **Side Panel** — Live status, plan tracking, action log
+- **Design Extraction** — Colors, typography → Tailwind config
+- **Recording → Skills** — Record actions, generate reusable SKILL.md
+
+> **Important:** Make sure you're on the `v2.0-dev` branch: `git checkout v2.0-dev`
 
 ## Prerequisites
 
@@ -56,15 +67,18 @@ npm start
 2. Navigate to `chrome://extensions/`
 3. Enable **Developer mode** (toggle in top-right corner)
 4. Click **Load unpacked**
-5. Navigate to and select:
-   ```
-   D:\Claude\sources\browser-agent\extension\
-   ```
-6. Extension appears in list with icon 🌐
+5. Navigate to and select the `extension/` folder:
+   - **Windows:** `D:\Claude\sources\browser-agent\extension\`
+   - **macOS:** `~/browser-agent/extension/`
+6. Extension appears as "Browser Agent for WS Workspace" v2.0.0
 
 **Verify:**
 - Extension shows green badge ✓
-- Click extension icon → popup shows "Connected to WS Workspace"
+- Click extension icon → **Side Panel** opens (not popup)
+- Side Panel shows "Connected" with green dot
+- Side Panel shows version v2.0
+
+**New in v2.0:** Clicking the extension icon opens a Side Panel instead of a popup. The panel stays open while you browse.
 
 ### Step 4: Install in Multiple Profiles (Optional)
 
