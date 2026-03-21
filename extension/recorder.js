@@ -44,6 +44,7 @@ class Recorder {
     const action = {
       type,
       params: this.sanitizeParams(params),
+      result: this.sanitizeResult(type, result),
       timestamp: Date.now(),
       elapsed: Date.now() - this.currentRecording.startedAt
     };
@@ -53,11 +54,13 @@ class Recorder {
       this.currentRecording.metadata.startUrl = params.url;
     }
 
-    // Don't record read-only actions (they don't need replay)
+    // Don't record read-only and meta actions (they don't need replay)
     const skipTypes = ['read_page', 'find', 'screenshot', 'screenshot_element',
       'screenshot_responsive', 'extract', 'get_text', 'extract_design',
       'extract_palette', 'extract_section', 'extract_seo', 'list_tabs',
-      'list_all_tabs', 'mouse_hover'];
+      'list_all_tabs', 'mouse_hover',
+      'start_recording', 'stop_recording', 'recording_status',
+      'list_recordings', 'get_recording', 'generate_skill', 'cleanup'];
 
     if (skipTypes.includes(type)) return;
 
@@ -268,12 +271,23 @@ class Recorder {
           description: `Click "${p.selector}"`
         };
 
-      case 'click_ref':
+      case 'click_ref': {
+        // Use find + click_ref for replay stability (ref IDs change between sessions)
+        const clickText = action.result?.text || '';
+        if (clickText) {
+          return {
+            tool: '_find_and_click',
+            args: { query: clickText.substring(0, 50) },
+            description: `Find and click "${clickText.substring(0, 50)}"`,
+            note: 'Uses browser_find to locate element, then browser_click_ref. Ref IDs are session-specific.'
+          };
+        }
         return {
           tool: 'browser_click_ref',
           args: { ref: p.ref },
-          description: `Click element ${p.ref}`
+          description: `Click element ${p.ref} (warning: ref may change between sessions)`
         };
+      }
 
       case 'type':
         return {
@@ -286,7 +300,8 @@ class Recorder {
         return {
           tool: 'browser_form_input',
           args: { ref: p.ref, value: replaceWithParam(p.value) },
-          description: `Set ${p.ref} to "${replaceWithParam(p.value)}"`
+          description: `Set ${p.ref} to "${replaceWithParam(p.value)}"`,
+          note: 'Ref is session-specific. Use browser_find first to locate the element in replay.'
         };
 
       case 'keyboard_type':
@@ -320,8 +335,8 @@ class Recorder {
       case 'scroll':
         return {
           tool: 'browser_scroll',
-          args: { direction: p.direction, amount: p.amount },
-          description: `Scroll ${p.direction} ${p.amount}px`
+          args: { direction: p.direction || 'down', amount: p.amount || 500 },
+          description: `Scroll ${p.direction || 'down'} ${p.amount || 500}px`
         };
 
       case 'scroll_to':
@@ -397,9 +412,23 @@ class Recorder {
   sanitizeParams(params) {
     if (!params) return {};
     const clean = { ...params };
-    // Remove potentially sensitive data
     delete clean.authToken;
     return clean;
+  }
+
+  /**
+   * Capture useful result data for skill generation
+   * For click_ref/form_input: save element text so skill can use find() instead of raw ref
+   */
+  sanitizeResult(type, result) {
+    if (!result) return null;
+    if (type === 'click_ref') {
+      return { text: result.text, role: result.role };
+    }
+    if (type === 'form_input') {
+      return { elementType: result.elementType };
+    }
+    return null;
   }
 }
 
