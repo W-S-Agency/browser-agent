@@ -391,7 +391,7 @@ export function createTools(): Tool[] {
     // === Design Extraction (Phase 2) ===
     {
       name: 'browser_extract_design',
-      description: 'Extract design tokens from a page section: colors (text, background), typography (fonts, weights, sizes), spacing, border radius. For 2P Builder pipeline.',
+      description: 'Extract design tokens from a page section: colors (text, background), typography (fonts, weights, sizes), spacing, border radius. For 2P Builder pipeline. Note: on canvas-based apps (Figma, Google Sheets) this extracts UI chrome colors, not canvas content.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -404,7 +404,7 @@ export function createTools(): Tool[] {
 
     {
       name: 'browser_extract_palette',
-      description: 'Extract full color palette from a page. Returns categorized colors (primary, secondary, accent, neutral) + ready-to-use Tailwind config fragment.',
+      description: 'Extract full color palette from a page. Returns categorized colors (primary, secondary, accent, neutral) + ready-to-use Tailwind config fragment. Note: on canvas-based apps (Figma) extracts UI colors, not design file colors — use Figma API for design tokens.',
       inputSchema: {
         type: 'object',
         properties: {

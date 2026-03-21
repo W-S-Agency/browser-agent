@@ -8,7 +8,7 @@ class AccessibilityTree {
   }
 
   /**
-   * Read the full accessibility tree of a page
+   * Read the full accessibility tree of a page (including iframes)
    * Returns a structured, semantic representation (like a screen reader)
    *
    * @param {number} tabId - Tab to read
@@ -23,12 +23,48 @@ class AccessibilityTree {
     try {
       if (!wasAttached) await this.attach(tabId);
 
+      // Enable DOM for iframe detection
+      await chrome.debugger.sendCommand({ tabId }, 'DOM.enable', {}).catch(() => {});
+
       // Step 1: Get the full accessibility tree via CDP
       const { nodes } = await chrome.debugger.sendCommand(
         { tabId },
         'Accessibility.getFullAXTree',
         { max_depth: maxDepth }
       );
+
+      // Step 1b: Try to read iframe accessibility trees
+      let iframeNodes = [];
+      try {
+        const { frameTree } = await chrome.debugger.sendCommand(
+          { tabId },
+          'Page.getFrameTree',
+          {}
+        );
+        const iframeFrames = this.collectChildFrames(frameTree);
+
+        for (const frame of iframeFrames) {
+          try {
+            const iframeResult = await chrome.debugger.sendCommand(
+              { tabId },
+              'Accessibility.getFullAXTree',
+              { max_depth: maxDepth, frameId: frame.id }
+            );
+            if (iframeResult?.nodes) {
+              // Mark iframe nodes with source frame
+              for (const node of iframeResult.nodes) {
+                node._iframeUrl = frame.url;
+                node._iframeName = frame.name || frame.url?.split('/').pop() || 'iframe';
+              }
+              iframeNodes = iframeNodes.concat(iframeResult.nodes);
+            }
+          } catch {
+            // Some frames may not support accessibility tree — skip
+          }
+        }
+      } catch {
+        // Page.getFrameTree may not be available — continue with main frame only
+      }
 
       // Step 2: Inject element map into page for ref tracking
       await chrome.scripting.executeScript({
@@ -50,17 +86,21 @@ class AccessibilityTree {
       );
 
       // Step 4: Process AX tree into clean format + assign refs
-      const processed = await this.processTree(tabId, nodes, interactiveOnly);
+      const allNodes = [...nodes, ...iframeNodes];
+      const processed = await this.processTree(tabId, allNodes, interactiveOnly);
 
       return {
         tree: processed.tree,
         refs: processed.refs,
         summary: {
-          totalNodes: nodes.length,
+          totalNodes: allNodes.length,
+          mainFrameNodes: nodes.length,
+          iframeNodes: iframeNodes.length,
           interactiveNodes: processed.interactiveCount,
           refsAssigned: Object.keys(processed.refs).length,
           pageTitle: this.findPageTitle(nodes),
-          pageUrl: (await chrome.tabs.get(tabId)).url
+          pageUrl: (await chrome.tabs.get(tabId)).url,
+          hasIframes: iframeNodes.length > 0
         }
       };
 
@@ -390,6 +430,25 @@ class AccessibilityTree {
 
   // --- Helpers ---
 
+  /**
+   * Recursively collect all child frame IDs from frame tree
+   */
+  collectChildFrames(frameTree) {
+    const frames = [];
+    if (frameTree.childFrames) {
+      for (const child of frameTree.childFrames) {
+        frames.push({
+          id: child.frame.id,
+          url: child.frame.url,
+          name: child.frame.name
+        });
+        // Recurse into nested iframes
+        frames.push(...this.collectChildFrames(child));
+      }
+    }
+    return frames;
+  }
+
   getProperty(node, name) {
     if (name === 'role') return node.role?.value;
     if (name === 'name') return node.name?.value;
@@ -414,6 +473,11 @@ class AccessibilityTree {
     } catch (error) {
       if (error.message?.includes('Already attached')) {
         this.attachedTargets.add(tabId);
+      } else if (error.message?.includes('Another debugger')) {
+        throw new Error(
+          `Cannot attach to tab ${tabId}: Chrome DevTools is open on this tab. ` +
+          `Close DevTools (F12) and retry.`
+        );
       } else {
         throw new Error(`Cannot attach debugger to tab ${tabId}: ${error.message}`);
       }

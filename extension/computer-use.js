@@ -437,6 +437,8 @@ class ComputerUse {
     } catch (error) {
       if (error.message?.includes('Already attached')) {
         this.attachedTargets.add(tabId);
+      } else if (error.message?.includes('Another debugger')) {
+        throw new Error(`Cannot attach to tab ${tabId}: Chrome DevTools is open. Close DevTools (F12) and retry.`);
       } else {
         throw error;
       }

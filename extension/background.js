@@ -57,6 +57,22 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabGroupManager.onTabRemoved(tabId);
 });
 
+// Intercept new tabs opened by agent tabs (window.open, target="_blank")
+// Add them to the agent group automatically
+chrome.tabs.onCreated.addListener(async (tab) => {
+  if (!tab.openerTabId) return;
+  // If the opener is an agent tab, add the new tab to agent group
+  if (tabGroupManager.agentTabIds.has(tab.openerTabId)) {
+    try {
+      await tabGroupManager.addTabToGroup(tab.id, tab.windowId);
+      tabGroupManager.agentTabIds.add(tab.id);
+      console.log('[Browser Agent v2] Auto-added child tab to agent group:', tab.id);
+    } catch (error) {
+      console.error('[Browser Agent v2] Failed to add child tab to group:', error);
+    }
+  }
+});
+
 // Start immediately
 init();
 
