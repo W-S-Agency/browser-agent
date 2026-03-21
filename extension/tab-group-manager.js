@@ -84,6 +84,9 @@ class TabGroupManager {
       collapsed: false
     });
 
+    // Move group to leftmost position
+    await chrome.tabGroups.move(this.groupId, { index: 0 });
+
     return this.groupId;
   }
 
