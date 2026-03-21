@@ -1,8 +1,14 @@
 // Browser Agent v2.0 Background Service Worker
-// Tab Group Isolation + CDP Screenshots + No Focus Hijacking
+// Tab Group Isolation + CDP Screenshots + Accessibility Tree + computer_use + Design Extraction
 
 // Import modules (Manifest V3 Service Worker)
-importScripts('tab-group-manager.js', 'cdp-screenshot.js');
+importScripts(
+  'tab-group-manager.js',
+  'cdp-screenshot.js',
+  'accessibility-tree.js',
+  'computer-use.js',
+  'design-extractor.js'
+);
 
 const BRIDGE_URL = 'ws://localhost:18792';
 const RECONNECT_DELAY_MIN = 1000;
@@ -197,6 +203,115 @@ async function executeCommand(command) {
 
     case 'switch_tab':
       return await switchAgentTab(params.tabId);
+
+    // --- Accessibility Tree (Phase 2) ---
+    case 'read_page':
+      return await accessibilityTree.readPage(
+        await resolveAgentTabId(params.tabId),
+        { maxDepth: params.maxDepth, interactiveOnly: params.interactiveOnly }
+      );
+
+    case 'find':
+      return await accessibilityTree.find(
+        await resolveAgentTabId(params.tabId),
+        params.query,
+        { maxResults: params.maxResults }
+      );
+
+    case 'form_input':
+      return await accessibilityTree.formInput(
+        await resolveAgentTabId(params.tabId),
+        params.ref,
+        params.value
+      );
+
+    case 'click_ref':
+      return await accessibilityTree.clickRef(
+        await resolveAgentTabId(params.tabId),
+        params.ref
+      );
+
+    case 'scroll_to':
+      return await accessibilityTree.scrollToRef(
+        await resolveAgentTabId(params.tabId),
+        params.ref
+      );
+
+    // --- computer_use (Phase 2) ---
+    case 'mouse_click':
+      return await computerUse.click(
+        await resolveAgentTabId(params.tabId),
+        params.x, params.y,
+        { button: params.button, clickCount: params.clickCount, modifiers: params.modifiers }
+      );
+
+    case 'mouse_hover':
+      return await computerUse.hover(
+        await resolveAgentTabId(params.tabId),
+        params.x, params.y
+      );
+
+    case 'mouse_drag':
+      return await computerUse.drag(
+        await resolveAgentTabId(params.tabId),
+        params.x1, params.y1, params.x2, params.y2,
+        { steps: params.steps }
+      );
+
+    case 'mouse_scroll':
+      return await computerUse.scroll(
+        await resolveAgentTabId(params.tabId),
+        params.x || 0, params.y || 0,
+        params.deltaX || 0, params.deltaY || 0
+      );
+
+    case 'keyboard_type':
+      return await computerUse.type(
+        await resolveAgentTabId(params.tabId),
+        params.text
+      );
+
+    case 'keyboard_key':
+      return await computerUse.key(
+        await resolveAgentTabId(params.tabId),
+        params.key,
+        params.modifiers || []
+      );
+
+    case 'screenshot_element':
+      return await computerUse.screenshotElement(
+        await resolveAgentTabId(params.tabId),
+        { ref: params.ref, selector: params.selector, padding: params.padding }
+      );
+
+    case 'screenshot_responsive':
+      return await computerUse.screenshotResponsive(
+        await resolveAgentTabId(params.tabId),
+        params.viewports
+      );
+
+    // --- Design Extraction (Phase 2) ---
+    case 'extract_design':
+      return await designExtractor.extractDesign(
+        await resolveAgentTabId(params.tabId),
+        params.selector
+      );
+
+    case 'extract_palette':
+      return await designExtractor.extractPalette(
+        await resolveAgentTabId(params.tabId)
+      );
+
+    case 'extract_section':
+      return await designExtractor.extractSection(
+        await resolveAgentTabId(params.tabId),
+        params.selector
+      );
+
+    case 'extract_seo':
+      return await designExtractor.extractSEO(
+        await resolveAgentTabId(params.tabId)
+      );
 
     // --- Cleanup ---
     case 'cleanup':
