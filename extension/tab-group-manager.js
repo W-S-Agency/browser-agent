@@ -84,8 +84,14 @@ class TabGroupManager {
       collapsed: false
     });
 
-    // Move group to leftmost position
-    await chrome.tabGroups.move(this.groupId, { index: 0 });
+    // Move group to leftmost position (after pinned tabs)
+    try {
+      const pinnedTabs = await chrome.tabs.query({ pinned: true });
+      const insertIndex = pinnedTabs.length;
+      await chrome.tabGroups.move(this.groupId, { index: insertIndex });
+    } catch {
+      // If move fails, group stays where it was created — acceptable
+    }
 
     return this.groupId;
   }
