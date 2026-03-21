@@ -440,6 +440,68 @@ export function createTools(): Tool[] {
       },
     },
 
+    // === Recording → Skills (Phase 4) ===
+    {
+      name: 'browser_start_recording',
+      description: 'Start recording browser actions for skill generation. All subsequent actions (navigate, click, type, etc.) will be captured. Use browser_stop_recording when done.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Recording name (e.g., "create-deal-bitrix24")' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    {
+      name: 'browser_stop_recording',
+      description: 'Stop recording and return the recorded actions. Use browser_generate_skill to convert to a reusable SKILL.md.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    {
+      name: 'browser_recording_status',
+      description: 'Check if recording is active and how many actions have been captured.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    {
+      name: 'browser_list_recordings',
+      description: 'List all saved recordings with names, duration, and action counts.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    {
+      name: 'browser_generate_skill',
+      description: 'Generate a SKILL.md file from a recording. Auto-detects parameters (text inputs, URLs) and creates a parameterized, reusable skill.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          recordingName: { type: 'string', description: 'Name of the recording to convert' },
+          skillName: { type: 'string', description: 'Name for the generated skill (optional, defaults to recording name)' },
+          description: { type: 'string', description: 'Skill description (optional)' },
+          parameterize: { type: 'boolean', description: 'Auto-detect and parameterize inputs (default: true)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+        required: ['recordingName'],
+      },
+    },
+
     // === Cleanup ===
     {
       name: 'browser_cleanup',
@@ -668,6 +730,42 @@ export async function executeToolCall(
     case 'browser_extract_seo':
       return await bridgeClient.executeCommand(
         { type: 'extract_seo', params: { tabId: params.tabId } },
+        profileId
+      );
+
+    // === Recording → Skills (Phase 4) ===
+    case 'browser_start_recording':
+      return await bridgeClient.executeCommand(
+        { type: 'start_recording', params: { name: params.name } },
+        profileId
+      );
+
+    case 'browser_stop_recording':
+      return await bridgeClient.executeCommand(
+        { type: 'stop_recording', params: {} },
+        profileId
+      );
+
+    case 'browser_recording_status':
+      return await bridgeClient.executeCommand(
+        { type: 'recording_status', params: {} },
+        profileId
+      );
+
+    case 'browser_list_recordings':
+      return await bridgeClient.executeCommand(
+        { type: 'list_recordings', params: {} },
+        profileId
+      );
+
+    case 'browser_generate_skill':
+      return await bridgeClient.executeCommand(
+        { type: 'generate_skill', params: {
+          recordingName: params.recordingName,
+          skillName: params.skillName,
+          description: params.description,
+          parameterize: params.parameterize
+        }},
         profileId
       );
 

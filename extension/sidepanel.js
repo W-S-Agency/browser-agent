@@ -61,6 +61,18 @@ function renderStatus(status) {
   profileName.textContent = status.alias || status.profileId?.substring(0, 16) || '—';
   tabCount.textContent = (status.agentTabs || 0).toString();
 
+  // Recording status
+  const recordingBar = document.getElementById('recordingBar');
+  const recordingName = document.getElementById('recordingName');
+  const recordingActions = document.getElementById('recordingActions');
+  if (status.recording?.isRecording) {
+    recordingBar.style.display = 'block';
+    recordingName.textContent = status.recording.currentName || '';
+    recordingActions.textContent = `${status.recording.actionCount} actions`;
+  } else {
+    recordingBar.style.display = 'none';
+  }
+
   // Render agent tabs
   if (status.agentTabsList) {
     renderTabs(status.agentTabsList);

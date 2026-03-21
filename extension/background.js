@@ -7,7 +7,8 @@ importScripts(
   'cdp-screenshot.js',
   'accessibility-tree.js',
   'computer-use.js',
-  'design-extractor.js'
+  'design-extractor.js',
+  'recorder.js'
 );
 
 const BRIDGE_URL = 'ws://localhost:18792';
@@ -147,6 +148,9 @@ async function handleMessage(event) {
     logAction(commandType, 'running', detail);
 
     const result = await executeCommand(message);
+
+    // Record action for skills pipeline
+    recorder.recordAction(commandType, message.params || {}, result);
 
     // Log: success
     logAction(commandType, 'success', detail);
@@ -369,6 +373,29 @@ async function executeCommand(command) {
       return await designExtractor.extractSEO(
         await resolveAgentTabId(params.tabId)
       );
+
+    // --- Recording (Phase 4) ---
+    case 'start_recording':
+      return recorder.start(params.name);
+
+    case 'stop_recording':
+      return recorder.stop();
+
+    case 'recording_status':
+      return recorder.getStatus();
+
+    case 'list_recordings':
+      return recorder.listRecordings();
+
+    case 'get_recording':
+      return recorder.getRecording(params.name);
+
+    case 'generate_skill':
+      return recorder.generateSkill(params.recordingName, {
+        skillName: params.skillName,
+        description: params.description,
+        parameterize: params.parameterize !== false
+      });
 
     // --- Cleanup ---
     case 'cleanup':
@@ -622,7 +649,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         version: '2.0.0',
         agentTabs: agentTabs.length,
         agentTabsList: agentTabs,
-        groupId: tabGroupManager.groupId
+        groupId: tabGroupManager.groupId,
+        recording: recorder.getStatus()
       });
     })();
     return true;
