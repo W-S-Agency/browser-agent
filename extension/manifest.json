@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Browser Agent for WS Workspace",
-  "version": "1.1.0",
-  "description": "Browser automation agent with access to logged-in Chrome/Comet sessions",
+  "version": "2.0.0",
+  "description": "Browser automation agent with tab isolation, CDP screenshots, and logged-in session access",
 
   "permissions": [
     "tabs",
+    "tabGroups",
     "activeTab",
     "scripting",
+    "debugger",
     "storage"
   ],
 

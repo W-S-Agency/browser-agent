@@ -1,9 +1,12 @@
-// Browser Agent Background Service Worker
-// Handles WebSocket connection to Bridge Server and command execution
+// Browser Agent v2.0 Background Service Worker
+// Tab Group Isolation + CDP Screenshots + No Focus Hijacking
+
+// Import modules (Manifest V3 Service Worker)
+importScripts('tab-group-manager.js', 'cdp-screenshot.js');
 
 const BRIDGE_URL = 'ws://localhost:18792';
-const RECONNECT_DELAY_MIN = 1000; // 1 second
-const RECONNECT_DELAY_MAX = 30000; // 30 seconds
+const RECONNECT_DELAY_MIN = 1000;
+const RECONNECT_DELAY_MAX = 30000;
 const RECONNECT_BACKOFF_MULTIPLIER = 1.5;
 
 let websocket = null;
@@ -19,46 +22,43 @@ let keepAliveInterval = null;
 function startKeepAlive() {
   if (keepAliveInterval) return;
   keepAliveInterval = setInterval(() => {
-    // Send empty message to keep worker alive
     chrome.runtime.getPlatformInfo(() => {});
-  }, 20000); // Every 20 seconds
+  }, 20000);
 }
 
 // Initialize on extension install/startup
 chrome.runtime.onStartup.addListener(init);
 chrome.runtime.onInstalled.addListener(init);
 
+// Clean up agent tabs on tab removal
+chrome.tabs.onRemoved.addListener((tabId) => {
+  tabGroupManager.onTabRemoved(tabId);
+});
+
 // Start immediately
 init();
 
 async function init() {
-  console.log('[Browser Agent] Initializing...');
+  console.log('[Browser Agent v2] Initializing...');
 
   // Load stored profile ID and alias
   const stored = await chrome.storage.local.get(['profileId', 'profileAlias']);
   profileId = stored.profileId || generateProfileId();
   profileAlias = stored.profileAlias || null;
 
-  // Save profile ID to storage
   await chrome.storage.local.set({ profileId });
 
-  console.log('[Browser Agent] Profile ID:', profileId);
+  console.log('[Browser Agent v2] Profile ID:', profileId);
   if (profileAlias) {
-    console.log('[Browser Agent] Profile Alias:', profileAlias);
+    console.log('[Browser Agent v2] Profile Alias:', profileAlias);
   }
 
-  // Fetch auth token from Bridge Server
   await fetchAuthToken();
-
-  // Start keep-alive to prevent service worker from stopping
   startKeepAlive();
-
-  // Connect to Bridge Server
   connectToBridge();
 }
 
 function generateProfileId() {
-  // Auto-detect browser type and create unique ID
   const timestamp = Date.now();
   const random = Math.random().toString(36).substring(7);
   return `chrome-${timestamp}-${random}`;
@@ -68,61 +68,45 @@ async function fetchAuthToken() {
   try {
     const response = await fetch('http://localhost:18793/auth/token');
     const data = await response.json();
-
     if (data.success && data.token) {
       authToken = data.token;
-      console.log('[Browser Agent] Auth token received from Bridge Server');
+      console.log('[Browser Agent v2] Auth token received');
     } else {
-      console.error('[Browser Agent] Failed to fetch auth token:', data.error);
+      console.error('[Browser Agent v2] Failed to fetch auth token:', data.error);
     }
   } catch (error) {
-    console.error('[Browser Agent] Error fetching auth token:', error);
+    console.error('[Browser Agent v2] Error fetching auth token:', error);
   }
 }
 
+// === WebSocket Connection ===
+
 function connectToBridge() {
-  if (websocket && websocket.readyState === WebSocket.OPEN) {
-    console.log('[Browser Agent] Already connected');
-    return;
-  }
+  if (websocket && websocket.readyState === WebSocket.OPEN) return;
 
-  console.log('[Browser Agent] Connecting to Bridge Server...');
-
-  // Include auth token in WebSocket URL
   if (!authToken) {
-    console.error('[Browser Agent] Cannot connect: No auth token available');
+    console.error('[Browser Agent v2] Cannot connect: No auth token');
     scheduleReconnect();
     return;
   }
 
-  const wsUrl = `${BRIDGE_URL}?token=${authToken}`;
-
   try {
-    websocket = new WebSocket(wsUrl);
-
+    websocket = new WebSocket(`${BRIDGE_URL}?token=${authToken}`);
     websocket.onopen = handleConnect;
     websocket.onmessage = handleMessage;
     websocket.onerror = handleError;
     websocket.onclose = handleClose;
   } catch (error) {
-    console.error('[Browser Agent] Connection failed:', error);
+    console.error('[Browser Agent v2] Connection failed:', error);
     scheduleReconnect();
   }
 }
 
 function handleConnect() {
-  console.log('[Browser Agent] Connected to Bridge Server');
-
-  // Reset reconnect attempts on successful connection
+  console.log('[Browser Agent v2] Connected to Bridge Server');
   reconnectAttempts = 0;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
-  // Clear reconnect timer
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-
-  // Register with Bridge
   sendMessage({
     type: 'register',
     profileId,
@@ -130,11 +114,11 @@ function handleConnect() {
     authToken,
     browserInfo: {
       name: 'chrome',
-      version: navigator.userAgent
+      version: navigator.userAgent,
+      agentVersion: '2.0.0'
     }
   });
 
-  // Update badge
   chrome.action.setBadgeText({ text: '✓' });
   chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
 }
@@ -143,105 +127,114 @@ async function handleMessage(event) {
   let message;
   try {
     message = JSON.parse(event.data);
-    console.log('[Browser Agent] Received:', message.type);
+    if (!message.id) return; // Ignore non-command messages
 
-    // Ignore non-command messages (like "registered")
-    if (!message.id) {
-      console.log('[Browser Agent] Ignoring non-command message:', message.type);
-      return;
-    }
-
-    // Handle command
+    console.log('[Browser Agent v2] Command:', message.type);
     const result = await executeCommand(message);
 
-    // Send response
-    sendMessage({
-      id: message.id,
-      success: true,
-      result
-    });
+    sendMessage({ id: message.id, success: true, result });
   } catch (error) {
-    console.error('[Browser Agent] Command failed:', error);
-
-    sendMessage({
-      id: message?.id,
-      success: false,
-      error: error.message
-    });
+    console.error('[Browser Agent v2] Command failed:', error);
+    sendMessage({ id: message?.id, success: false, error: error.message });
   }
 }
 
+// === Command Execution (v2: Tab Group Isolated) ===
+
 async function executeCommand(command) {
-  const { type, params, tabId } = command;
-
-  // Commands that don't require a target tab
-  const noTabCommands = ['list_tabs', 'new_tab', 'switch_tab', 'close_tab'];
-
-  // Get target tab only if needed
-  let targetTabId = tabId;
-  if (!noTabCommands.includes(type) && !targetTabId) {
-    const activeTab = await getActiveTab();
-    if (!activeTab) {
-      throw new Error('No active tab found. Please specify tabId or open a tab.');
-    }
-    targetTabId = activeTab.id;
-  }
+  const { type, params = {} } = command;
 
   switch (type) {
+    // --- Navigation ---
     case 'navigate':
-      return await navigate(targetTabId, params.url);
+      return await navigateAgent(params.url, params.tabId);
 
+    // --- Interaction ---
     case 'click':
-      return await clickElement(targetTabId, params.selector);
+      return await clickElement(await resolveAgentTabId(params.tabId), params.selector);
 
     case 'type':
-      return await typeText(targetTabId, params.selector, params.text);
+      return await typeText(await resolveAgentTabId(params.tabId), params.selector, params.text);
 
+    // --- Screenshots (CDP — no focus hijack!) ---
     case 'screenshot':
-      return await takeScreenshot(targetTabId, params.fullPage);
+      return await takeScreenshot(await resolveAgentTabId(params.tabId), params);
 
+    // --- JavaScript ---
     case 'execute_js':
-      return await executeJS(targetTabId, params.code);
+      return await executeJS(await resolveAgentTabId(params.tabId), params.code);
 
+    // --- Data extraction ---
     case 'extract':
-      return await extractData(targetTabId, params.selector);
+      return await extractData(await resolveAgentTabId(params.tabId), params.selector);
 
     case 'get_text':
-      return await getText(targetTabId, params.selector);
+      return await getText(await resolveAgentTabId(params.tabId), params.selector);
 
+    // --- Scroll ---
+    case 'scroll':
+      return await scrollPage(await resolveAgentTabId(params.tabId), params.direction, params.amount);
+
+    // --- History ---
+    case 'go_back':
+      return await goBack(await resolveAgentTabId(params.tabId));
+
+    case 'go_forward':
+      return await goForward(await resolveAgentTabId(params.tabId));
+
+    // --- Tab management (agent group only) ---
     case 'list_tabs':
-      return await listTabs();
+      return await tabGroupManager.listAgentTabs();
 
-    case 'switch_tab':
-      return await switchTab(params.tabId);
-
-    case 'close_tab':
-      return await closeTab(params.tabId);
+    case 'list_all_tabs':
+      return await tabGroupManager.listAllTabs();
 
     case 'new_tab':
-      return await newTab(params.url);
+      return await createAgentTab(params.url);
+
+    case 'close_tab':
+      return await tabGroupManager.closeTab(params.tabId);
+
+    case 'switch_tab':
+      return await switchAgentTab(params.tabId);
+
+    // --- Cleanup ---
+    case 'cleanup':
+      await tabGroupManager.cleanup();
+      await cdpScreenshot.cleanup();
+      return { cleaned: true };
 
     default:
       throw new Error(`Unknown command type: ${type}`);
   }
 }
 
-// Navigation
-async function navigate(tabId, url) {
-  await chrome.tabs.update(tabId, { url });
+/**
+ * Resolve tab ID: if provided, verify it's an agent tab.
+ * If not provided, get active agent tab or create one.
+ */
+async function resolveAgentTabId(tabId) {
+  if (tabId) {
+    const tab = await tabGroupManager.getAgentTab(tabId);
+    return tab.id;
+  }
 
-  // Wait for load
-  return new Promise((resolve) => {
-    chrome.tabs.onUpdated.addListener(function listener(updatedTabId, info) {
-      if (updatedTabId === tabId && info.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve({ url, status: 'loaded' });
-      }
-    });
-  });
+  // Try to get existing agent tab
+  const agentTab = await tabGroupManager.getActiveAgentTab();
+  if (agentTab) return agentTab.id;
+
+  // No agent tabs exist — create one
+  const newTab = await tabGroupManager.createTab('about:blank');
+  return newTab.id;
 }
 
-// Click element
+// --- Navigation (creates tab in agent group if needed) ---
+async function navigateAgent(url, tabId) {
+  const result = await tabGroupManager.navigate(url, tabId);
+  return { url, tabId: result.tabId, status: result.status };
+}
+
+// --- Click ---
 async function clickElement(tabId, selector) {
   const result = await chrome.scripting.executeScript({
     target: { tabId },
@@ -253,11 +246,10 @@ async function clickElement(tabId, selector) {
     },
     args: [selector]
   });
-
   return result[0].result;
 }
 
-// Type text
+// --- Type (smart event dispatch) ---
 async function typeText(tabId, selector, text) {
   const result = await chrome.scripting.executeScript({
     target: { tabId },
@@ -266,60 +258,68 @@ async function typeText(tabId, selector, text) {
       if (!element) throw new Error(`Element not found: ${sel}`);
 
       element.focus();
-      element.value = txt;
 
-      // Trigger input events
+      // Smart input: detect element type
+      const tagName = element.tagName.toLowerCase();
+      const inputType = element.type?.toLowerCase();
+
+      if (tagName === 'select') {
+        // Select element: find matching option
+        const option = Array.from(element.options).find(
+          o => o.value === txt || o.textContent.trim() === txt
+        );
+        if (option) {
+          element.value = option.value;
+        } else {
+          throw new Error(`Option not found: ${txt}`);
+        }
+      } else if (inputType === 'checkbox' || inputType === 'radio') {
+        // Toggle checkbox/radio
+        element.checked = txt === 'true' || txt === '1' || txt === 'on';
+      } else {
+        // Text input / textarea
+        element.value = txt;
+      }
+
+      // Dispatch events for framework reactivity (React, Vue, Angular)
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
+      element.dispatchEvent(new Event('blur', { bubbles: true }));
 
-      return { typed: true, selector: sel, text: txt };
+      return { typed: true, selector: sel, text: txt, elementType: `${tagName}[${inputType || ''}]` };
     },
     args: [selector, text]
   });
-
   return result[0].result;
 }
 
-// Screenshot
-async function takeScreenshot(tabId, fullPage = false) {
-  // Switch to tab first
-  await chrome.tabs.update(tabId, { active: true });
+// --- Screenshot (CDP — no focus steal!) ---
+async function takeScreenshot(tabId, params = {}) {
+  const { fullPage = false, optimized = false } = params;
 
-  // Capture visible tab
-  const dataUrl = await chrome.tabs.captureVisibleTab(null, {
-    format: 'png'
-  });
-
-  return { screenshot: dataUrl, fullPage };
+  if (optimized) {
+    return await cdpScreenshot.captureForLLM(tabId);
+  }
+  return await cdpScreenshot.capture(tabId, { fullPage });
 }
 
-// Execute JavaScript
+// --- JavaScript Execution ---
 async function executeJS(tabId, code) {
-  console.log('[Browser Agent] executeJS called with code:', code);
   try {
     const result = await chrome.scripting.executeScript({
       target: { tabId },
-      world: 'MAIN',  // Execute in page context, not isolated world
-      func: (codeString) => {
-        // Use eval in page context - simpler and more reliable
-        return eval(codeString);
-      },
+      world: 'MAIN',
+      func: (codeString) => eval(codeString),
       args: [code]
     });
-
-    console.log('[Browser Agent] executeScript raw result:', result);
-    console.log('[Browser Agent] result[0]:', result?.[0]);
-    console.log('[Browser Agent] result[0].result:', result?.[0]?.result);
-    const finalResult = result && result[0] ? result[0].result : null;
-    console.log('[Browser Agent] executeJS returning:', finalResult);
-    return finalResult;
+    return result?.[0]?.result ?? null;
   } catch (error) {
-    console.error('[Browser Agent] executeJS error:', error);
-    return null;
+    console.error('[Browser Agent v2] executeJS error:', error);
+    return { error: error.message };
   }
 }
 
-// Extract data
+// --- Data Extraction ---
 async function extractData(tabId, selector) {
   const result = await chrome.scripting.executeScript({
     target: { tabId },
@@ -335,11 +335,10 @@ async function extractData(tabId, selector) {
     },
     args: [selector]
   });
-
   return result[0].result;
 }
 
-// Get text
+// --- Get Text ---
 async function getText(tabId, selector) {
   const result = await chrome.scripting.executeScript({
     target: { tabId },
@@ -350,174 +349,126 @@ async function getText(tabId, selector) {
     },
     args: [selector]
   });
-
   return result[0].result;
 }
 
-// Tab management
-function isSystemPage(url) {
-  if (!url) return true;
-  const systemPrefixes = ['chrome://', 'chrome-extension://', 'about:', 'edge://', 'browser://'];
-  return systemPrefixes.some(prefix => url.startsWith(prefix));
+// --- Scroll ---
+async function scrollPage(tabId, direction = 'down', amount = 500) {
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (dir, amt) => {
+      const scrollAmount = dir === 'up' ? -amt : amt;
+      window.scrollBy({ top: scrollAmount, behavior: 'smooth' });
+      return {
+        scrolled: true,
+        direction: dir,
+        amount: amt,
+        scrollY: window.scrollY,
+        scrollHeight: document.documentElement.scrollHeight,
+        viewportHeight: window.innerHeight
+      };
+    },
+    args: [direction, amount]
+  });
+  return result[0].result;
 }
 
-async function getActiveTab() {
-  console.log('[Browser Agent] getActiveTab called');
-
-  // Try to get active tab in any window
-  let activeTabs = await chrome.tabs.query({ active: true });
-  console.log('[Browser Agent] Active tabs:', activeTabs.length, activeTabs.map(t => t.url));
-
-  // If active tab is not a system page, use it
-  if (activeTabs.length > 0 && !isSystemPage(activeTabs[0].url)) {
-    console.log('[Browser Agent] Using active tab:', activeTabs[0].id, activeTabs[0].url);
-    return activeTabs[0];
-  }
-
-  console.log('[Browser Agent] Active tab is system page, looking for accessible tabs...');
-
-  // Otherwise, get ALL tabs and filter out system pages
-  const allTabs = await chrome.tabs.query({});
-  console.log('[Browser Agent] All tabs:', allTabs.length);
-
-  const accessibleTabs = allTabs.filter(tab => !isSystemPage(tab.url));
-  console.log('[Browser Agent] Accessible tabs after filtering:', accessibleTabs.length, accessibleTabs.slice(0, 3).map(t => t.url));
-
-  if (accessibleTabs.length === 0) {
-    throw new Error('No accessible web pages found. All tabs are system pages (chrome://, chrome-extension://).');
-  }
-
-  // Sort by last accessed and return most recent
-  const sortedTabs = accessibleTabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-  const selectedTab = sortedTabs[0];
-  console.log('[Browser Agent] Selected tab:', selectedTab.id, selectedTab.url);
-
-  return selectedTab;
+// --- History Navigation ---
+async function goBack(tabId) {
+  await chrome.tabs.goBack(tabId);
+  return { action: 'back', tabId };
 }
 
-async function listTabs() {
-  const tabs = await chrome.tabs.query({});
-  return tabs.map(tab => ({
-    id: tab.id,
-    url: tab.url,
-    title: tab.title,
-    active: tab.active
-  }));
+async function goForward(tabId) {
+  await chrome.tabs.goForward(tabId);
+  return { action: 'forward', tabId };
 }
 
-async function switchTab(tabId) {
-  await chrome.tabs.update(tabId, { active: true });
-  return { tabId, active: true };
+// --- Agent Tab Operations ---
+async function createAgentTab(url) {
+  const tab = await tabGroupManager.createTab(url);
+  return { tabId: tab.id, url: tab.url || url, groupId: tabGroupManager.groupId };
 }
 
-async function closeTab(tabId) {
-  await chrome.tabs.remove(tabId);
-  return { tabId, closed: true };
+async function switchAgentTab(tabId) {
+  const tab = await tabGroupManager.getAgentTab(tabId);
+  await chrome.tabs.update(tab.id, { active: true });
+  return { tabId: tab.id, active: true };
 }
 
-async function newTab(url) {
-  const tab = await chrome.tabs.create({ url });
-  return { tabId: tab.id, url: tab.url };
-}
+// === WebSocket Helpers ===
 
-// WebSocket helpers
 function sendMessage(message) {
   if (websocket && websocket.readyState === WebSocket.OPEN) {
     websocket.send(JSON.stringify(message));
-  } else {
-    console.warn('[Browser Agent] Cannot send message, not connected');
   }
 }
 
 function handleError(error) {
-  console.error('[Browser Agent] WebSocket error:', error);
-  updateBadgeDisconnected();
+  console.error('[Browser Agent v2] WebSocket error:', error);
+  chrome.action.setBadgeText({ text: '✗' });
+  chrome.action.setBadgeBackgroundColor({ color: '#F44336' });
 }
 
 function handleClose() {
-  console.log('[Browser Agent] Disconnected from Bridge Server');
-  updateBadgeDisconnected();
+  console.log('[Browser Agent v2] Disconnected');
+  chrome.action.setBadgeText({ text: '✗' });
+  chrome.action.setBadgeBackgroundColor({ color: '#F44336' });
   scheduleReconnect();
 }
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
-
   reconnectAttempts++;
-
-  // Calculate delay with exponential backoff
   const delay = Math.min(
     RECONNECT_DELAY_MIN * Math.pow(RECONNECT_BACKOFF_MULTIPLIER, reconnectAttempts - 1),
     RECONNECT_DELAY_MAX
   );
-
-  console.log(`[Browser Agent] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts})...`);
+  console.log(`[Browser Agent v2] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts})`);
 
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-
-    // Refresh auth token before reconnecting
-    fetchAuthToken().then(() => {
-      connectToBridge();
-    }).catch((error) => {
-      console.error('[Browser Agent] Failed to refresh auth token:', error);
-      // Try to reconnect anyway
-      connectToBridge();
-    });
+    fetchAuthToken().then(() => connectToBridge()).catch(() => connectToBridge());
   }, delay);
 }
 
-function updateBadgeDisconnected() {
-  chrome.action.setBadgeText({ text: '✗' });
-  chrome.action.setBadgeBackgroundColor({ color: '#F44336' });
-}
+// === Popup Communication ===
 
-// Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getStatus') {
-    sendResponse({
-      connected: websocket && websocket.readyState === WebSocket.OPEN,
-      profileId,
-      alias: profileAlias
-    });
+    (async () => {
+      const agentTabs = await tabGroupManager.listAgentTabs();
+      sendResponse({
+        connected: websocket && websocket.readyState === WebSocket.OPEN,
+        profileId,
+        alias: profileAlias,
+        version: '2.0.0',
+        agentTabs: agentTabs.length,
+        groupId: tabGroupManager.groupId
+      });
+    })();
+    return true;
   }
 
   if (request.action === 'setAlias') {
     (async () => {
       try {
         const alias = request.alias;
-
-        // Validate alias format
         if (!/^[a-z0-9-]+$/.test(alias)) {
-          sendResponse({
-            success: false,
-            error: 'Alias must contain only lowercase letters, numbers, and hyphens'
-          });
+          sendResponse({ success: false, error: 'Alias must contain only lowercase letters, numbers, and hyphens' });
           return;
         }
-
-        // Save alias to storage
         profileAlias = alias;
         await chrome.storage.local.set({ profileAlias: alias });
-
-        console.log('[Browser Agent] Alias saved:', alias);
-
-        // If connected, send alias update to Bridge Server
         if (websocket && websocket.readyState === WebSocket.OPEN) {
-          sendMessage({
-            type: 'update_alias',
-            profileId,
-            alias
-          });
+          sendMessage({ type: 'update_alias', profileId, alias });
         }
-
         sendResponse({ success: true, alias });
       } catch (error) {
-        console.error('[Browser Agent] Failed to save alias:', error);
         sendResponse({ success: false, error: error.message });
       }
     })();
-    return true; // Keep channel open for async response
+    return true;
   }
 
   return true;

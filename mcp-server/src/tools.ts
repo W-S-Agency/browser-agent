@@ -1,51 +1,62 @@
 /**
- * Browser Agent MCP Tools
- * Defines all available tools for browser automation
+ * Browser Agent MCP Tools v2.0
+ * Tab Group Isolation + CDP Screenshots + Smart Input
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { BridgeClient } from './bridge-client.js';
 
-/**
- * Create all available tools
- */
 export function createTools(): Tool[] {
   return [
-    // Navigation
+    // === Navigation ===
     {
       name: 'browser_navigate',
-      description: 'Navigate to a URL in the browser',
+      description: 'Navigate to a URL. Opens in agent tab group (isolated from user tabs). Creates a new agent tab if none exists.',
       inputSchema: {
         type: 'object',
         properties: {
-          url: {
-            type: 'string',
-            description: 'The URL to navigate to',
-          },
-          profileId: {
-            type: 'string',
-            description: 'Optional profile ID (uses active profile if not specified)',
-          },
+          url: { type: 'string', description: 'The URL to navigate to' },
+          tabId: { type: 'number', description: 'Specific agent tab ID (optional, uses active agent tab)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional, uses active profile)' },
         },
         required: ['url'],
       },
     },
 
-    // Interaction
     {
-      name: 'browser_click',
-      description: 'Click an element on the page',
+      name: 'browser_go_back',
+      description: 'Go back in browser history',
       inputSchema: {
         type: 'object',
         properties: {
-          selector: {
-            type: 'string',
-            description: 'CSS selector for the element to click',
-          },
-          profileId: {
-            type: 'string',
-            description: 'Optional profile ID',
-          },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    {
+      name: 'browser_go_forward',
+      description: 'Go forward in browser history',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    // === Interaction ===
+    {
+      name: 'browser_click',
+      description: 'Click an element on the page by CSS selector',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector for the element to click' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
         required: ['selector'],
       },
@@ -53,81 +64,74 @@ export function createTools(): Tool[] {
 
     {
       name: 'browser_type',
-      description: 'Type text into an input field',
+      description: 'Type text into an input field. Smart detection: handles text inputs, textareas, selects, checkboxes, and radio buttons automatically.',
       inputSchema: {
         type: 'object',
         properties: {
-          selector: {
-            type: 'string',
-            description: 'CSS selector for the input element',
-          },
-          text: {
-            type: 'string',
-            description: 'Text to type',
-          },
-          profileId: {
-            type: 'string',
-            description: 'Optional profile ID',
-          },
+          selector: { type: 'string', description: 'CSS selector for the input element' },
+          text: { type: 'string', description: 'Text to type (for select: option value or text; for checkbox/radio: true/false)' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
         required: ['selector', 'text'],
       },
     },
 
-    // Screenshot
+    // === Screenshot (CDP — no focus hijack) ===
     {
       name: 'browser_screenshot',
-      description: 'Take a screenshot of the current page',
+      description: 'Take a screenshot using CDP (does NOT steal browser focus). Supports fullPage and optimized mode for LLM token efficiency.',
       inputSchema: {
         type: 'object',
         properties: {
-          fullPage: {
-            type: 'boolean',
-            description: 'Capture full page (default: false)',
-          },
-          profileId: {
-            type: 'string',
-            description: 'Optional profile ID',
-          },
+          fullPage: { type: 'boolean', description: 'Capture full page scroll height (default: false)' },
+          optimized: { type: 'boolean', description: 'Downscale for LLM token efficiency (default: false)' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
       },
     },
 
-    // JavaScript execution
+    // === Scroll ===
     {
-      name: 'browser_execute_js',
-      description: 'Execute JavaScript code on the page',
+      name: 'browser_scroll',
+      description: 'Scroll the page up or down',
       inputSchema: {
         type: 'object',
         properties: {
-          code: {
-            type: 'string',
-            description: 'JavaScript code to execute',
-          },
-          profileId: {
-            type: 'string',
-            description: 'Optional profile ID',
-          },
+          direction: { type: 'string', enum: ['up', 'down'], description: 'Scroll direction (default: down)' },
+          amount: { type: 'number', description: 'Scroll amount in pixels (default: 500)' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    // === JavaScript ===
+    {
+      name: 'browser_execute_js',
+      description: 'Execute JavaScript code on the page (runs in page context)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: 'JavaScript code to execute' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
         required: ['code'],
       },
     },
 
-    // Data extraction
+    // === Data Extraction ===
     {
       name: 'browser_extract',
-      description: 'Extract data from elements matching a selector',
+      description: 'Extract structured data from elements matching a CSS selector (text, html, attributes)',
       inputSchema: {
         type: 'object',
         properties: {
-          selector: {
-            type: 'string',
-            description: 'CSS selector for elements to extract',
-          },
-          profileId: {
-            type: 'string',
-            description: 'Optional profile ID',
-          },
+          selector: { type: 'string', description: 'CSS selector for elements to extract' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
         required: ['selector'],
       },
@@ -135,93 +139,98 @@ export function createTools(): Tool[] {
 
     {
       name: 'browser_get_text',
-      description: 'Get text content of an element',
+      description: 'Get text content of an element by CSS selector',
       inputSchema: {
         type: 'object',
         properties: {
-          selector: {
-            type: 'string',
-            description: 'CSS selector for the element',
-          },
-          profileId: {
-            type: 'string',
-            description: 'Optional profile ID',
-          },
+          selector: { type: 'string', description: 'CSS selector for the element' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
         required: ['selector'],
       },
     },
 
-    // Tab management
+    // === Tab Management (Agent Group) ===
     {
       name: 'browser_list_tabs',
-      description: 'List all open tabs',
+      description: 'List agent tabs only (tabs in the 🤖 Agent group). Does NOT show user tabs.',
       inputSchema: {
         type: 'object',
         properties: {
-          profileId: {
-            type: 'string',
-            description: 'Optional profile ID',
-          },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
       },
     },
 
     {
-      name: 'browser_switch_tab',
-      description: 'Switch to a specific tab',
+      name: 'browser_list_all_tabs',
+      description: 'List ALL tabs (agent + user). Agent tabs are marked with isAgentTab: true.',
       inputSchema: {
         type: 'object',
         properties: {
-          tabId: {
-            type: 'number',
-            description: 'Tab ID to switch to',
-          },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
-        required: ['tabId'],
       },
     },
 
     {
       name: 'browser_new_tab',
-      description: 'Open a new tab',
+      description: 'Open a new tab in the agent tab group (isolated from user tabs)',
       inputSchema: {
         type: 'object',
         properties: {
-          url: {
-            type: 'string',
-            description: 'URL to open in new tab (optional)',
-          },
-          profileId: {
-            type: 'string',
-            description: 'Optional profile ID',
-          },
+          url: { type: 'string', description: 'URL to open (optional, defaults to blank)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
       },
     },
 
     {
       name: 'browser_close_tab',
-      description: 'Close a specific tab',
+      description: 'Close an agent tab. Cannot close user tabs (safety).',
       inputSchema: {
         type: 'object',
         properties: {
-          tabId: {
-            type: 'number',
-            description: 'Tab ID to close',
-          },
+          tabId: { type: 'number', description: 'Agent tab ID to close' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
         required: ['tabId'],
       },
     },
 
-    // Profile management
+    {
+      name: 'browser_switch_tab',
+      description: 'Switch to a specific agent tab (makes it active)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tabId: { type: 'number', description: 'Agent tab ID to switch to' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+        required: ['tabId'],
+      },
+    },
+
+    // === Profile Management ===
     {
       name: 'browser_list_profiles',
-      description: 'List all connected browser profiles',
+      description: 'List all connected browser profiles with aliases',
       inputSchema: {
         type: 'object',
         properties: {},
+      },
+    },
+
+    // === Cleanup ===
+    {
+      name: 'browser_cleanup',
+      description: 'Close all agent tabs and clean up resources. Use when done with browser automation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
       },
     },
   ];
@@ -241,47 +250,66 @@ export async function executeToolCall(
     // Navigation
     case 'browser_navigate':
       return await bridgeClient.executeCommand(
-        { type: 'navigate', params: { url: params.url } },
+        { type: 'navigate', params: { url: params.url, tabId: params.tabId } },
+        profileId
+      );
+
+    case 'browser_go_back':
+      return await bridgeClient.executeCommand(
+        { type: 'go_back', params: { tabId: params.tabId } },
+        profileId
+      );
+
+    case 'browser_go_forward':
+      return await bridgeClient.executeCommand(
+        { type: 'go_forward', params: { tabId: params.tabId } },
         profileId
       );
 
     // Interaction
     case 'browser_click':
       return await bridgeClient.executeCommand(
-        { type: 'click', params: { selector: params.selector } },
+        { type: 'click', params: { selector: params.selector, tabId: params.tabId } },
         profileId
       );
 
     case 'browser_type':
       return await bridgeClient.executeCommand(
-        { type: 'type', params: { selector: params.selector, text: params.text } },
+        { type: 'type', params: { selector: params.selector, text: params.text, tabId: params.tabId } },
         profileId
       );
 
-    // Screenshot
+    // Screenshot (CDP)
     case 'browser_screenshot':
       return await bridgeClient.executeCommand(
-        { type: 'screenshot', params: { fullPage: params.fullPage || false } },
+        { type: 'screenshot', params: { fullPage: params.fullPage, optimized: params.optimized, tabId: params.tabId } },
         profileId
       );
 
-    // JavaScript execution
+    // Scroll
+    case 'browser_scroll':
+      return await bridgeClient.executeCommand(
+        { type: 'scroll', params: { direction: params.direction, amount: params.amount, tabId: params.tabId } },
+        profileId
+      );
+
+    // JavaScript
     case 'browser_execute_js':
       return await bridgeClient.executeCommand(
-        { type: 'execute_js', params: { code: params.code } },
+        { type: 'execute_js', params: { code: params.code, tabId: params.tabId } },
         profileId
       );
 
     // Data extraction
     case 'browser_extract':
       return await bridgeClient.executeCommand(
-        { type: 'extract', params: { selector: params.selector } },
+        { type: 'extract', params: { selector: params.selector, tabId: params.tabId } },
         profileId
       );
 
     case 'browser_get_text':
       return await bridgeClient.executeCommand(
-        { type: 'get_text', params: { selector: params.selector } },
+        { type: 'get_text', params: { selector: params.selector, tabId: params.tabId } },
         profileId
       );
 
@@ -289,11 +317,8 @@ export async function executeToolCall(
     case 'browser_list_tabs':
       return await bridgeClient.executeCommand({ type: 'list_tabs', params: {} }, profileId);
 
-    case 'browser_switch_tab':
-      return await bridgeClient.executeCommand(
-        { type: 'switch_tab', params: { tabId: params.tabId } },
-        profileId
-      );
+    case 'browser_list_all_tabs':
+      return await bridgeClient.executeCommand({ type: 'list_all_tabs', params: {} }, profileId);
 
     case 'browser_new_tab':
       return await bridgeClient.executeCommand(
@@ -307,9 +332,19 @@ export async function executeToolCall(
         profileId
       );
 
+    case 'browser_switch_tab':
+      return await bridgeClient.executeCommand(
+        { type: 'switch_tab', params: { tabId: params.tabId } },
+        profileId
+      );
+
     // Profile management
     case 'browser_list_profiles':
       return await bridgeClient.listProfiles();
+
+    // Cleanup
+    case 'browser_cleanup':
+      return await bridgeClient.executeCommand({ type: 'cleanup', params: {} }, profileId);
 
     default:
       throw new Error(`Unknown tool: ${toolName}`);

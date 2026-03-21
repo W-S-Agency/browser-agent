@@ -81,6 +81,12 @@ function updateUI(status) {
     profileIdSpan.textContent = displayText;
     profileIdSpan.title = status.profileId;
   }
+
+  // Show agent tabs count
+  const agentTabsSpan = document.getElementById('agentTabs');
+  if (agentTabsSpan && status.agentTabs !== undefined) {
+    agentTabsSpan.textContent = status.agentTabs.toString();
+  }
 }
 
 function showAliasStatus(message, type) {
