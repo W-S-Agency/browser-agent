@@ -261,11 +261,12 @@ class ComputerUse {
           world: 'MAIN',
           func: (refId) => {
             const map = window.__agentElementMap;
-            if (!map || !map[refId]) throw new Error(`Ref not found: ${refId}`);
+            if (!map || !map[refId]) return { error: `Ref not found: ${refId}` };
             const weakRef = map[refId];
             const el = weakRef.deref ? weakRef.deref() : weakRef;
-            if (!el) throw new Error(`Element garbage collected: ${refId}`);
+            if (!el) return { error: `Element garbage collected: ${refId}` };
             const r = el.getBoundingClientRect();
+            if (r.width === 0 && r.height === 0) return { error: `Element has zero dimensions: ${refId}` };
             return { x: r.x, y: r.y, width: r.width, height: r.height };
           },
           args: [ref]
@@ -277,8 +278,9 @@ class ComputerUse {
           target: { tabId },
           func: (sel) => {
             const el = document.querySelector(sel);
-            if (!el) throw new Error(`Element not found: ${sel}`);
+            if (!el) return { error: `Element not found: ${sel}` };
             const r = el.getBoundingClientRect();
+            if (r.width === 0 && r.height === 0) return { error: `Element has zero dimensions: ${sel}` };
             return { x: r.x, y: r.y, width: r.width, height: r.height };
           },
           args: [selector]
@@ -286,6 +288,11 @@ class ComputerUse {
         rect = result[0].result;
       } else {
         throw new Error('Either ref or selector is required for element screenshot');
+      }
+
+      // Check for errors from injected script
+      if (!rect || rect.error) {
+        throw new Error(rect?.error || 'Failed to get element bounds');
       }
 
       // Apply padding

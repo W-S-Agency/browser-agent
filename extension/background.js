@@ -334,13 +334,15 @@ async function resolveAgentTabId(tabId) {
     return tab.id;
   }
 
-  // Try to get existing agent tab
+  // Try to get existing agent tab (with a real URL, not about:blank)
   const agentTab = await tabGroupManager.getActiveAgentTab();
+  if (agentTab && agentTab.url && agentTab.url !== 'about:blank') return agentTab.id;
+
+  // If we have an about:blank tab, return it (navigate will fix it)
   if (agentTab) return agentTab.id;
 
-  // No agent tabs exist — create one
-  const newTab = await tabGroupManager.createTab('about:blank');
-  return newTab.id;
+  // No agent tabs exist — throw helpful error
+  throw new Error('No agent tab available. Use browser_navigate to open a page first.');
 }
 
 // --- Navigation (creates tab in agent group if needed) ---
