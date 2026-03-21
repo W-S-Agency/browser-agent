@@ -10,13 +10,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // Poll for updates every 2 seconds
   updateInterval = setInterval(updateStatus, 2000);
 
-  // Listen for action log updates from background
+  // Listen for updates from background
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === 'actionLog') {
       addLogEntry(message.entry);
     }
     if (message.type === 'statusUpdate') {
       renderStatus(message.status);
+    }
+    if (message.type === 'planUpdate') {
+      renderPlan(message.plan);
     }
   });
 });
@@ -71,6 +74,11 @@ function renderStatus(status) {
     recordingActions.textContent = `${status.recording.actionCount} actions`;
   } else {
     recordingBar.style.display = 'none';
+  }
+
+  // Render plan
+  if (status.plan) {
+    renderPlan(status.plan);
   }
 
   // Render agent tabs
@@ -178,6 +186,35 @@ function addLogEntry(entry) {
   // Update count
   const currentCount = parseInt(logCount.textContent || '0');
   logCount.textContent = (currentCount + 1).toString();
+}
+
+function renderPlan(plan) {
+  const planSection = document.getElementById('planSection');
+  const planList = document.getElementById('planList');
+  const planProgress = document.getElementById('planProgress');
+
+  if (!plan || !plan.steps || plan.steps.length === 0) {
+    planSection.style.display = 'none';
+    return;
+  }
+
+  planSection.style.display = 'block';
+
+  const completed = plan.steps.filter(s => s.status === 'completed' || s.status === 'done').length;
+  planProgress.textContent = `${completed}/${plan.steps.length}`;
+
+  planList.innerHTML = plan.steps.map((step, i) => {
+    const icon = step.status === 'completed' || step.status === 'done' ? '&#10003;'
+      : step.status === 'in_progress' ? '&#9654;'
+      : '&#9675;';
+
+    return `
+      <div class="plan-step ${step.status}">
+        <span class="plan-icon">${icon}</span>
+        <span class="plan-text">${escapeHtml(step.text)}</span>
+      </div>
+    `;
+  }).join('');
 }
 
 function escapeHtml(text) {

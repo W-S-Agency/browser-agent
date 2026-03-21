@@ -27,6 +27,10 @@ let authToken = null;
 const MAX_LOG_ENTRIES = 50;
 let actionLog = [];
 
+// === Plan Tracking (for Side Panel) ===
+let currentPlan = null; // { name, steps: [{text, status}], currentStep }
+
+
 // Keep Service Worker alive
 let keepAliveInterval = null;
 
@@ -401,6 +405,38 @@ async function executeCommand(command) {
         await resolveAgentTabId(params.tabId)
       );
 
+    // --- Plan Tracking ---
+    case 'set_plan':
+      currentPlan = {
+        name: params.name || 'Plan',
+        steps: (params.steps || []).map(s => ({ text: s, status: 'pending' })),
+        currentStep: 0
+      };
+      chrome.runtime.sendMessage({ type: 'planUpdate', plan: currentPlan }).catch(() => {});
+      return { plan: currentPlan.name, steps: currentPlan.steps.length };
+
+    case 'update_plan_step':
+      if (!currentPlan) return { error: 'No active plan' };
+      const stepIdx = params.step !== undefined ? params.step : currentPlan.currentStep;
+      if (stepIdx >= 0 && stepIdx < currentPlan.steps.length) {
+        currentPlan.steps[stepIdx].status = params.status || 'completed';
+        // Auto-advance to next pending step
+        if (params.status === 'completed' || params.status === 'done') {
+          const next = currentPlan.steps.findIndex((s, i) => i > stepIdx && s.status === 'pending');
+          if (next !== -1) {
+            currentPlan.currentStep = next;
+            currentPlan.steps[next].status = 'in_progress';
+          }
+        }
+      }
+      chrome.runtime.sendMessage({ type: 'planUpdate', plan: currentPlan }).catch(() => {});
+      return currentPlan;
+
+    case 'clear_plan':
+      currentPlan = null;
+      chrome.runtime.sendMessage({ type: 'planUpdate', plan: null }).catch(() => {});
+      return { cleared: true };
+
     // --- Recording (Phase 4) ---
     case 'start_recording':
       return recorder.start(params.name);
@@ -677,7 +713,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         agentTabs: agentTabs.length,
         agentTabsList: agentTabs,
         groupId: tabGroupManager.groupId,
-        recording: recorder.getStatus()
+        recording: recorder.getStatus(),
+        plan: currentPlan
       });
     })();
     return true;

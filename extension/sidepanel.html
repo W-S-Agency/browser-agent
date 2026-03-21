@@ -233,6 +233,25 @@
 
     .profile-name { color: #90caf9; font-weight: 500; }
 
+    /* === Plan Steps === */
+    .plan-step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .plan-step.completed { color: #81c784; }
+    .plan-step.in_progress { color: #ffb74d; background: rgba(255,183,77,0.08); }
+    .plan-step.pending { color: #666; }
+
+    .plan-icon { width: 16px; text-align: center; flex-shrink: 0; }
+
+    .plan-text { flex: 1; }
+    .plan-step.completed .plan-text { text-decoration: line-through; opacity: 0.7; }
+
     /* === Scrollbar === */
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -266,6 +285,15 @@
       <span id="recordingName" style="color: #e0e0e0; font-size: 12px; flex: 1;"></span>
       <span id="recordingActions" style="color: #888; font-size: 11px;"></span>
     </div>
+  </div>
+
+  <!-- Plan -->
+  <div id="planSection" class="section" style="display: none;">
+    <div class="section-header">
+      Plan
+      <span class="section-count" id="planProgress">0/0</span>
+    </div>
+    <div id="planList" class="tab-list"></div>
   </div>
 
   <!-- Agent Tabs -->

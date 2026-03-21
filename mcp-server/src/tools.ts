@@ -440,6 +440,45 @@ export function createTools(): Tool[] {
       },
     },
 
+    // === Plan Tracking ===
+    {
+      name: 'browser_set_plan',
+      description: 'Set a plan with steps to display in the Side Panel. Shows progress to the user as you work through steps. Call browser_update_plan_step to mark steps as completed.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Plan name (e.g., "SEO Audit for 2penguins.de")' },
+          steps: { type: 'array', items: { type: 'string' }, description: 'List of step descriptions' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+        required: ['steps'],
+      },
+    },
+
+    {
+      name: 'browser_update_plan_step',
+      description: 'Update a plan step status. Marks current step as completed and auto-advances to next step.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          step: { type: 'number', description: 'Step index (0-based). If omitted, updates current step.' },
+          status: { type: 'string', enum: ['completed', 'in_progress', 'error', 'pending'], description: 'New status (default: completed)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    {
+      name: 'browser_clear_plan',
+      description: 'Clear the current plan from Side Panel.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
     // === Recording → Skills (Phase 4) ===
     {
       name: 'browser_start_recording',
@@ -730,6 +769,25 @@ export async function executeToolCall(
     case 'browser_extract_seo':
       return await bridgeClient.executeCommand(
         { type: 'extract_seo', params: { tabId: params.tabId } },
+        profileId
+      );
+
+    // === Plan Tracking ===
+    case 'browser_set_plan':
+      return await bridgeClient.executeCommand(
+        { type: 'set_plan', params: { name: params.name, steps: params.steps } },
+        profileId
+      );
+
+    case 'browser_update_plan_step':
+      return await bridgeClient.executeCommand(
+        { type: 'update_plan_step', params: { step: params.step, status: params.status || 'completed' } },
+        profileId
+      );
+
+    case 'browser_clear_plan':
+      return await bridgeClient.executeCommand(
+        { type: 'clear_plan', params: {} },
         profileId
       );
 
