@@ -541,6 +541,20 @@ export function createTools(): Tool[] {
       },
     },
 
+    // === Session / Cookies ===
+    {
+      name: 'browser_get_cookies',
+      description: 'Get cookies from the browser via CDP. Useful for extracting auth tokens from logged-in sessions (Bitrix24, Google, Facebook Ads, etc.) to use in API calls. Returns all cookies or filtered by domain.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          domain: { type: 'string', description: 'Filter cookies by domain (e.g. "facebook.com", "bitrix24.de"). Optional — omit to get all cookies.' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
     // === Cleanup ===
     {
       name: 'browser_cleanup',
@@ -824,6 +838,13 @@ export async function executeToolCall(
           description: params.description,
           parameterize: params.parameterize
         }},
+        profileId
+      );
+
+    // Cookies
+    case 'browser_get_cookies':
+      return await bridgeClient.executeCommand(
+        { type: 'get_all_cookies', params: { domain: params.domain, tabId: params.tabId } },
         profileId
       );
 

@@ -258,6 +258,20 @@ async function executeCommand(command) {
     case 'screenshot':
       return await takeScreenshot(await resolveAgentTabId(params.tabId), params);
 
+    // --- Cookies (CDP) ---
+    case 'get_all_cookies': {
+      const tabId = await resolveAgentTabId(params.tabId);
+      try { await chrome.debugger.attach({tabId}, '1.3'); } catch (_) {}
+      try {
+        const result = await chrome.debugger.sendCommand({tabId}, 'Network.getAllCookies', {});
+        const cookies = result.cookies || [];
+        const domain = params.domain;
+        return domain ? cookies.filter(c => c.domain.includes(domain)) : cookies;
+      } finally {
+        try { await chrome.debugger.detach({tabId}); } catch (_) {}
+      }
+    }
+
     // --- JavaScript ---
     case 'execute_js':
       return await executeJS(await resolveAgentTabId(params.tabId), params.code);
