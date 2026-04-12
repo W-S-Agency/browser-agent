@@ -186,7 +186,8 @@ function renderLog(entries) {
   if (logEmpty) logEmpty.style.display = 'none';
   logCount.textContent = entries.length.toString();
 
-  logContainer.innerHTML = entries.map(entry => {
+  // Newest first
+  logContainer.innerHTML = [...entries].reverse().map(entry => {
     const icon = entry.status === 'success' ? '✓'
       : entry.status === 'error' ? '✗'
       : entry.status === 'running' ? '►'
@@ -209,9 +210,6 @@ function renderLog(entries) {
       </div>
     `;
   }).join('');
-
-  // Auto-scroll to bottom
-  logContainer.scrollTop = logContainer.scrollHeight;
 }
 
 function addLogEntry(entry) {
@@ -243,8 +241,7 @@ function addLogEntry(entry) {
     </div>
   `;
 
-  logContainer.insertAdjacentHTML('beforeend', html);
-  logContainer.scrollTop = logContainer.scrollHeight;
+  logContainer.insertAdjacentHTML('afterbegin', html);
 
   // Update count
   const currentCount = parseInt(logCount.textContent || '0');
