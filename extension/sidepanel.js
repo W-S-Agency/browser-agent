@@ -22,6 +22,69 @@ document.addEventListener('DOMContentLoaded', () => {
       renderPlan(message.plan);
     }
   });
+
+  // Alias editing
+  const editAliasBtn = document.getElementById('editAliasBtn');
+  const aliasEditSection = document.getElementById('aliasEditSection');
+  const aliasEditInput = document.getElementById('aliasEditInput');
+  const aliasSaveBtn = document.getElementById('aliasSaveBtn');
+  const aliasCancelBtn = document.getElementById('aliasCancelBtn');
+  const aliasStatusMsg = document.getElementById('aliasStatusMsg');
+
+  editAliasBtn.addEventListener('click', async () => {
+    // Load current alias into input
+    try {
+      const status = await chrome.runtime.sendMessage({ action: 'getStatus' });
+      aliasEditInput.value = status.alias || '';
+    } catch { aliasEditInput.value = ''; }
+    aliasStatusMsg.textContent = '';
+    aliasStatusMsg.className = 'alias-status-msg';
+    aliasEditSection.style.display = 'block';
+    aliasEditInput.focus();
+  });
+
+  aliasCancelBtn.addEventListener('click', () => {
+    aliasEditSection.style.display = 'none';
+  });
+
+  aliasSaveBtn.addEventListener('click', async () => {
+    const alias = aliasEditInput.value.trim();
+    if (!alias) {
+      aliasStatusMsg.textContent = 'Alias cannot be empty';
+      aliasStatusMsg.className = 'alias-status-msg error';
+      return;
+    }
+    if (!/^[a-z0-9-]+$/.test(alias)) {
+      aliasStatusMsg.textContent = 'Use only lowercase letters, numbers, hyphens';
+      aliasStatusMsg.className = 'alias-status-msg error';
+      return;
+    }
+    aliasSaveBtn.disabled = true;
+    aliasStatusMsg.textContent = 'Saving...';
+    aliasStatusMsg.className = 'alias-status-msg';
+    try {
+      const result = await chrome.runtime.sendMessage({ action: 'setAlias', alias });
+      if (result.success) {
+        aliasStatusMsg.textContent = `✓ Alias "${alias}" saved`;
+        aliasStatusMsg.className = 'alias-status-msg success';
+        setTimeout(() => { aliasEditSection.style.display = 'none'; }, 1500);
+        updateStatus();
+      } else {
+        aliasStatusMsg.textContent = `✗ ${result.error || 'Failed to save'}`;
+        aliasStatusMsg.className = 'alias-status-msg error';
+      }
+    } catch (err) {
+      aliasStatusMsg.textContent = `✗ ${err.message}`;
+      aliasStatusMsg.className = 'alias-status-msg error';
+    } finally {
+      aliasSaveBtn.disabled = false;
+    }
+  });
+
+  aliasEditInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') aliasSaveBtn.click();
+    if (e.key === 'Escape') aliasCancelBtn.click();
+  });
 });
 
 async function updateStatus() {

@@ -229,9 +229,81 @@
       color: #888;
       display: flex;
       justify-content: space-between;
+      align-items: center;
     }
 
     .profile-name { color: #90caf9; font-weight: 500; }
+
+    .edit-alias-btn {
+      background: none;
+      border: none;
+      color: #555;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0 2px;
+      margin-left: 4px;
+      line-height: 1;
+    }
+    .edit-alias-btn:hover { color: #90caf9; }
+
+    /* === Alias Edit Panel === */
+    .alias-edit-section {
+      padding: 10px 16px;
+      background: #16213e;
+      border-top: 1px solid #0f3460;
+      flex-shrink: 0;
+    }
+
+    .alias-edit-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .alias-edit-input {
+      flex: 1;
+      background: #0f3460;
+      border: 1px solid #1a5276;
+      border-radius: 4px;
+      color: #e0e0e0;
+      font-size: 12px;
+      padding: 5px 8px;
+      outline: none;
+    }
+    .alias-edit-input:focus { border-color: #90caf9; }
+    .alias-edit-input::placeholder { color: #555; }
+
+    .alias-save-btn {
+      background: #1a5276;
+      border: none;
+      border-radius: 4px;
+      color: #90caf9;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 5px 10px;
+      white-space: nowrap;
+    }
+    .alias-save-btn:hover { background: #21618c; }
+    .alias-save-btn:disabled { opacity: 0.5; cursor: default; }
+
+    .alias-cancel-btn {
+      background: none;
+      border: 1px solid #333;
+      border-radius: 4px;
+      color: #888;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 5px 8px;
+    }
+    .alias-cancel-btn:hover { color: #e0e0e0; border-color: #555; }
+
+    .alias-status-msg {
+      font-size: 11px;
+      margin-top: 5px;
+      min-height: 14px;
+    }
+    .alias-status-msg.success { color: #81c784; }
+    .alias-status-msg.error { color: #ef9a9a; }
 
     /* === Plan Steps === */
     .plan-step {
@@ -318,9 +390,19 @@
     <div class="tab-empty" id="logEmpty">Waiting for commands...</div>
   </div>
 
+  <!-- Alias Edit Panel (hidden by default) -->
+  <div id="aliasEditSection" class="alias-edit-section" style="display: none;">
+    <div class="alias-edit-row">
+      <input type="text" id="aliasEditInput" class="alias-edit-input" placeholder="work, personal, comet-ads" maxlength="50">
+      <button id="aliasSaveBtn" class="alias-save-btn">Save</button>
+      <button id="aliasCancelBtn" class="alias-cancel-btn">✕</button>
+    </div>
+    <div id="aliasStatusMsg" class="alias-status-msg"></div>
+  </div>
+
   <!-- Profile Footer -->
   <div class="profile-section">
-    <span>Profile: <span class="profile-name" id="profileName">—</span></span>
+    <span>Profile: <span class="profile-name" id="profileName">—</span><button class="edit-alias-btn" id="editAliasBtn" title="Set alias">✎</button></span>
     <span id="bridgeStatus">Bridge: localhost</span>
   </div>
 
