@@ -912,7 +912,7 @@ async function _actViaRef(tabId, ref, action, value) {
 async function selfHealAct(tabId, params = {}) {
   const description = params.description;
   const action = params.action || 'click';
-  const value = params.value;
+  const value = params.value ?? null;   // undefined is unserializable for scripting args
   if (!description) return { error: 'description is required' };
 
   const origin = await _origin(tabId);
@@ -942,16 +942,25 @@ async function selfHealAct(tabId, params = {}) {
 async function getPerformance(tabId) {
   const r = await chrome.scripting.executeScript({
     target: { tabId }, world: 'MAIN',
-    func: () => {
+    func: async () => {
+      // LCP / CLS / paint are observer-only entry types — getEntriesByType()
+      // does NOT return them. Use buffered PerformanceObserver to read past entries.
+      const acc = { fcp: null, lcp: null, cls: 0 };
+      const observers = [];
+      const watch = (type, cb) => {
+        try {
+          const o = new PerformanceObserver((list) => { for (const e of list.getEntries()) cb(e); });
+          o.observe({ type, buffered: true });
+          observers.push(o);
+        } catch (_) { /* type unsupported */ }
+      };
+      watch('paint', (e) => { if (e.name === 'first-contentful-paint') acc.fcp = e.startTime; });
+      watch('largest-contentful-paint', (e) => { acc.lcp = e.startTime || e.renderTime || e.loadTime; });
+      watch('layout-shift', (e) => { if (!e.hadRecentInput) acc.cls += e.value; });
+      await new Promise((res) => setTimeout(res, 500));   // let buffered entries flush
+      observers.forEach((o) => o.disconnect());
+
       const nav = performance.getEntriesByType('navigation')[0] || {};
-      const paint = performance.getEntriesByType('paint') || [];
-      const fcp = paint.find(p => p.name === 'first-contentful-paint');
-      const lcpEntries = performance.getEntriesByType('largest-contentful-paint') || [];
-      const lcp = lcpEntries.length ? lcpEntries[lcpEntries.length - 1] : null;
-      let cls = 0;
-      for (const e of (performance.getEntriesByType('layout-shift') || [])) {
-        if (!e.hadRecentInput) cls += e.value;
-      }
       const res = performance.getEntriesByType('resource') || [];
       const bytes = res.reduce((s, x) => s + (x.transferSize || 0), 0);
       const round = (v) => (v == null ? null : Math.round(v));
@@ -960,11 +969,11 @@ async function getPerformance(tabId) {
         ttfb_ms: round(nav.responseStart),
         domContentLoaded_ms: round(nav.domContentLoadedEventEnd),
         load_ms: round(nav.loadEventEnd),
-        fcp_ms: fcp ? round(fcp.startTime) : null,
-        lcp_ms: lcp ? round(lcp.startTime || lcp.renderTime || lcp.loadTime) : null,
-        cls: Math.round(cls * 1000) / 1000,
+        fcp_ms: round(acc.fcp),
+        lcp_ms: round(acc.lcp),
+        cls: Math.round(acc.cls * 1000) / 1000,
         resources: { count: res.length, transferBytes: bytes },
-        note: 'CWV from buffered entries (lab). LCP/CLS may grow with late content; reload for a fresh measure. INP is interaction-based and not captured passively.'
+        note: 'CWV from buffered PerformanceObserver (lab). Reload for a fresh measure. INP is interaction-based and not captured passively.'
       };
     }
   });
