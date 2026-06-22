@@ -1,17 +1,22 @@
-# Browser Agent v2.0 - Setup Guide
+# Browser Agent v2.1.0 - Setup Guide
 
 **Complete installation guide for WS Agency team**
 
-## What's New in v2.0
+## What's New in v2.1.0 (50 tools total)
 
-- **Tab Group Isolation** — Agent works in "🤖 Agent" group, never touches your tabs
-- **CDP Screenshots** — No more browser focus hijacking
-- **Accessibility Tree** — Read pages as documents with ref IDs (38 tools total)
-- **Side Panel** — Live status, plan tracking, action log
-- **Design Extraction** — Colors, typography → Tailwind config
-- **Recording → Skills** — Record actions, generate reusable SKILL.md
+12 new/improved tools on top of v2.0 (Sprints 1–5):
+- **execute_js** — top-level `return`/`await`; `frameSelector` runs code inside an iframe (cross-origin too)
+- **read_network / read_console** — debug forms, tracking, JS errors
+- **wait_for** — wait for selector/text (SPA timing)
+- **set_cookies / download / upload_file** — sessions, file download (returns path), file upload
+- **act** — self-healing action by description (survives site redesigns)
+- **performance** — Core Web Vitals + timing, no PageSpeed quota
+- **observe** — ranked interactive elements
+- **extract_design_system** — DESIGN.md + W3C DTCG + Tailwind v4/v3 + CSS vars + brand
 
-> **Important:** Make sure you're on the `v2.0-dev` branch: `git checkout v2.0-dev`
+Carried over from v2.0: Tab Group Isolation, CDP Screenshots, Accessibility Tree, Side Panel, Design Extraction, Recording → Skills.
+
+> **Install:** download the pre-built release zip from the [v2.1.0 Release](https://github.com/W-S-Agency/browser-agent/releases/tag/v2.1.0) (no `tsc` needed), or `git checkout master` (tag `v2.1.0`).
 
 ## Prerequisites
 
@@ -70,15 +75,15 @@ npm start
 5. Navigate to and select the `extension/` folder:
    - **Windows:** `D:\Claude\sources\browser-agent\extension\`
    - **macOS:** `~/browser-agent/extension/`
-6. Extension appears as "Browser Agent for WS Workspace" v2.0.0
+6. Extension appears as "Browser Agent for WS Workspace" v2.1.0
 
 **Verify:**
 - Extension shows green badge ✓
 - Click extension icon → **Side Panel** opens (not popup)
 - Side Panel shows "Connected" with green dot
-- Side Panel shows version v2.0
+- Side Panel shows version v2.1.0 (and `agentVersion` 2.1.0 in `browser_list_profiles`)
 
-**New in v2.0:** Clicking the extension icon opens a Side Panel instead of a popup. The panel stays open while you browse.
+> **MV3 note:** each browser profile runs its own service worker — reload the extension **in every profile separately** (toggle off→on) after updating. A profile still on old code reports `agentVersion 2.0.0`.
 
 ### Step 4: Install in Multiple Profiles (Optional)
 

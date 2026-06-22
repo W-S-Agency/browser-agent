@@ -73,7 +73,7 @@ chmod +x install-launchd.sh
 ## 🔧 Components
 
 ### 1. MCP Server (`mcp-server/`)
-- 12 browser automation tools
+- 50 browser automation tools (v2.1.0)
 - stdio transport for WS Workspace
 - TypeScript with @modelcontextprotocol/sdk
 
@@ -132,6 +132,38 @@ browser_close_tab({ profileId: "work", tabId: 12345 })
 
 // Profile management
 browser_list_profiles()
+```
+
+### New in v2.1.0 (Sprints 1–5)
+
+```javascript
+// JS / iframe — top-level return & await; run inside an iframe (cross-origin too)
+browser_execute_js({ code: "return document.title" })
+browser_execute_js({ code: "return location.host", frameSelector: "iframe.editor" })
+
+// Debugging — network + console
+browser_read_network({ filter: "collect", onlyFailed: false })
+browser_read_console({ level: "error" })
+
+// SPA timing
+browser_wait_for({ selector: "#result", timeout: 5000 })
+
+// Session / files
+browser_set_cookies({ cookies: [{ name: "x", value: "1", domain: "example.com", path: "/" }] })
+browser_download({ url: "https://.../file.pdf" })          // returns saved path
+browser_upload_file({ selector: "input[type=file]", files: ["C:\\path\\file.pdf"] })
+
+// Self-healing action — survives site redesigns (cache → semantic find → re-cache)
+browser_act({ description: "Submit button", action: "click" })
+
+// Performance — Core Web Vitals, no PageSpeed quota
+browser_performance({ activate: true })                    // activate: foreground for FCP/LCP
+
+// Observe — ranked interactive elements ("what can I do here")
+browser_observe({ filter: "search", limit: 20 })
+
+// Design system — DESIGN.md + W3C DTCG + Tailwind v4/v3 + CSS vars + brand
+browser_extract_design_system({ selector: "body" })
 ```
 
 **👉 See [ALIASES.md](ALIASES.md) for full profile alias documentation**
