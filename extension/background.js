@@ -255,6 +255,8 @@ function formatCommandDetail(command) {
     case 'read_network': return p.filter || (p.onlyFailed ? 'failed' : 'all');
     case 'download': return p.url || '';
     case 'upload_file': return `${p.selector} ← ${((p.files||[p.file]).filter(Boolean)).length} file(s)`;
+    case 'act': return `${p.action || 'click'}: "${(p.description || '').substring(0, 30)}"`;
+    case 'performance': return 'CWV + timing';
     case 'set_cookies': return `${(p.cookies || []).length} cookie(s)`;
     case 'read_console': return p.level || 'all';
     case 'wait_for': return p.selector || (p.text ? `"${p.text}"` : `${p.timeout || 10000}ms`);
@@ -537,6 +539,14 @@ async function executeCommand(command) {
     case 'upload_file':
       return await uploadFile(await resolveAgentTabId(params.tabId), params);
 
+    // --- Self-healing action (cache selector → fallback to semantic find) ---
+    case 'act':
+      return await selfHealAct(await resolveAgentTabId(params.tabId), params);
+
+    // --- Performance metrics (Core Web Vitals + navigation timing) ---
+    case 'performance':
+      return await getPerformance(await resolveAgentTabId(params.tabId));
+
     // --- Cleanup ---
     case 'cleanup':
       await tabGroupManager.cleanup();
@@ -814,6 +824,151 @@ async function uploadFile(tabId, params = {}) {
   } finally {
     try { await chrome.debugger.detach({ tabId }); } catch (_) {}
   }
+}
+
+// === Self-healing action (Sprint 3) =========================================
+// Acts by natural-language description. Caches a stable CSS selector per
+// (origin, action, description) in chrome.storage.local. Next call tries the
+// cached selector first (fast, no AX scan); if it no longer resolves, falls
+// back to the existing semantic find(), re-acts, and re-caches the new selector.
+// This makes recurring playbooks survive site redesigns.
+
+// Injected: perform an action on a given element + return a stable CSS selector.
+function _BA_ACT_ON_ELEMENT(element, action, value) {
+  function cssPath(el) {
+    if (el.id) return '#' + CSS.escape(el.id);
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && node.tagName.toLowerCase() !== 'html') {
+      let sel = node.tagName.toLowerCase();
+      const parent = node.parentNode;
+      if (parent) {
+        const sameTag = Array.from(parent.children).filter(c => c.tagName === node.tagName);
+        if (sameTag.length > 1) sel += ':nth-of-type(' + (sameTag.indexOf(node) + 1) + ')';
+      }
+      parts.unshift(sel);
+      if (node.id) { parts[0] = '#' + CSS.escape(node.id); break; }
+      node = parent;
+    }
+    return parts.join(' > ');
+  }
+  element.scrollIntoView({ block: 'center' });
+  let result;
+  if (action === 'click') {
+    element.click();
+    result = { clicked: true, text: (element.textContent || '').trim().slice(0, 100) };
+  } else if (action === 'type') {
+    element.focus();
+    if (element.isContentEditable) element.textContent = value;
+    else element.value = value;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    result = { typed: value };
+  } else if (action === 'get_text') {
+    result = { text: (element.textContent || '').trim() };
+  } else {
+    throw new Error('Unknown act action: ' + action);
+  }
+  return { result, selector: cssPath(element) };
+}
+
+async function _origin(tabId) {
+  const r = await chrome.scripting.executeScript({
+    target: { tabId }, world: 'MAIN', func: () => location.origin
+  });
+  return r?.[0]?.result || '';
+}
+
+async function _actViaSelector(tabId, selector, action, value) {
+  const r = await chrome.scripting.executeScript({
+    target: { tabId }, world: 'MAIN',
+    func: (sel, act, val, fnSrc) => {
+      const el = document.querySelector(sel);
+      if (!el) return { found: false };
+      const fn = eval('(' + fnSrc + ')');
+      return { found: true, ...fn(el, act, val) };
+    },
+    args: [selector, action, value, _BA_ACT_ON_ELEMENT.toString()]
+  });
+  return r?.[0]?.result || { found: false };
+}
+
+async function _actViaRef(tabId, ref, action, value) {
+  const r = await chrome.scripting.executeScript({
+    target: { tabId }, world: 'MAIN',
+    func: (refId, act, val, fnSrc) => {
+      const map = window.__agentElementMap;
+      const wr = map && map[refId];
+      const el = wr ? (wr.deref ? wr.deref() : wr) : null;
+      if (!el) return { found: false };
+      const fn = eval('(' + fnSrc + ')');
+      return { found: true, ...fn(el, act, val) };
+    },
+    args: [ref, action, value, _BA_ACT_ON_ELEMENT.toString()]
+  });
+  return r?.[0]?.result || { found: false };
+}
+
+async function selfHealAct(tabId, params = {}) {
+  const description = params.description;
+  const action = params.action || 'click';
+  const value = params.value;
+  if (!description) return { error: 'description is required' };
+
+  const origin = await _origin(tabId);
+  const cacheKey = `act:${origin}:${action}:${description}`;
+  const stored = await chrome.storage.local.get(cacheKey);
+  const cachedSelector = stored[cacheKey];
+
+  // 1) Fast path: try the cached selector
+  if (cachedSelector) {
+    const hit = await _actViaSelector(tabId, cachedSelector, action, value);
+    if (hit.found) return { ...hit.result, via: 'cache', selector: cachedSelector };
+  }
+
+  // 2) Heal: semantic find → act by ref → (re)cache the resolved selector
+  const found = await accessibilityTree.find(tabId, description, { maxResults: 1 });
+  const match = found.matches && found.matches[0];
+  if (!match) return { error: `not found: "${description}"`, via: 'find', healed: !!cachedSelector };
+  const acted = await _actViaRef(tabId, match.ref, action, value);
+  if (!acted.found) return { error: `ref stale for "${description}"`, via: 'find' };
+  if (acted.selector) await chrome.storage.local.set({ [cacheKey]: acted.selector });
+  return { ...acted.result, via: cachedSelector ? 'find(healed)' : 'find', selector: acted.selector, ref: match.ref };
+}
+
+// === Performance metrics (Sprint 3) =========================================
+// Core Web Vitals (LCP/CLS/FCP) from buffered PerformanceObserver entries +
+// navigation timing (TTFB, DOMContentLoaded, load) + resource summary.
+async function getPerformance(tabId) {
+  const r = await chrome.scripting.executeScript({
+    target: { tabId }, world: 'MAIN',
+    func: () => {
+      const nav = performance.getEntriesByType('navigation')[0] || {};
+      const paint = performance.getEntriesByType('paint') || [];
+      const fcp = paint.find(p => p.name === 'first-contentful-paint');
+      const lcpEntries = performance.getEntriesByType('largest-contentful-paint') || [];
+      const lcp = lcpEntries.length ? lcpEntries[lcpEntries.length - 1] : null;
+      let cls = 0;
+      for (const e of (performance.getEntriesByType('layout-shift') || [])) {
+        if (!e.hadRecentInput) cls += e.value;
+      }
+      const res = performance.getEntriesByType('resource') || [];
+      const bytes = res.reduce((s, x) => s + (x.transferSize || 0), 0);
+      const round = (v) => (v == null ? null : Math.round(v));
+      return {
+        url: location.href,
+        ttfb_ms: round(nav.responseStart),
+        domContentLoaded_ms: round(nav.domContentLoadedEventEnd),
+        load_ms: round(nav.loadEventEnd),
+        fcp_ms: fcp ? round(fcp.startTime) : null,
+        lcp_ms: lcp ? round(lcp.startTime || lcp.renderTime || lcp.loadTime) : null,
+        cls: Math.round(cls * 1000) / 1000,
+        resources: { count: res.length, transferBytes: bytes },
+        note: 'CWV from buffered entries (lab). LCP/CLS may grow with late content; reload for a fresh measure. INP is interaction-based and not captured passively.'
+      };
+    }
+  });
+  return r?.[0]?.result || { error: 'performance read failed' };
 }
 
 async function extractData(tabId, selector) {

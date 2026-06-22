@@ -652,6 +652,35 @@ export function createTools(): Tool[] {
       },
     },
 
+    // === Self-healing action + Performance (Sprint 3) ===
+    {
+      name: 'browser_act',
+      description: 'Self-healing action by natural-language description. Caches a CSS selector per (site, action, description); next time it tries the cached selector first (fast), and if the page changed it auto-falls back to semantic find() and re-caches. Ideal for recurring playbooks that must survive site redesigns. Actions: click, type (needs value), get_text.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          description: { type: 'string', description: 'What to act on, in words (matched against accessible name/role/value), e.g. "Senden button", "email field".' },
+          action: { type: 'string', enum: ['click', 'type', 'get_text'], description: 'Action to perform (default click)' },
+          value: { type: 'string', description: 'Text to type (for action=type)' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+        required: ['description'],
+      },
+    },
+
+    {
+      name: 'browser_performance',
+      description: 'Read performance metrics for the current page: Core Web Vitals (LCP, CLS, FCP) from buffered entries + navigation timing (TTFB, DOMContentLoaded, load) + resource count/bytes. Lab data from the real logged-in Chrome session — no PageSpeed API quota. Reload the page for a fresh measure.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
     // === Cleanup ===
     {
       name: 'browser_cleanup',
@@ -986,6 +1015,19 @@ export async function executeToolCall(
     case 'browser_upload_file':
       return await bridgeClient.executeCommand(
         { type: 'upload_file', params: { selector: params.selector, files: params.files, tabId: params.tabId } },
+        profileId
+      );
+
+    // Self-healing + Performance (Sprint 3)
+    case 'browser_act':
+      return await bridgeClient.executeCommand(
+        { type: 'act', params: { description: params.description, action: params.action, value: params.value, tabId: params.tabId } },
+        profileId
+      );
+
+    case 'browser_performance':
+      return await bridgeClient.executeCommand(
+        { type: 'performance', params: { tabId: params.tabId } },
         profileId
       );
 
