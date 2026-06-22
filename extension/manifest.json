@@ -11,7 +11,10 @@
     "scripting",
     "debugger",
     "storage",
-    "sidePanel"
+    "sidePanel",
+    "downloads",
+    "webRequest",
+    "webNavigation"
   ],
 
   "host_permissions": [
