@@ -545,7 +545,7 @@ async function executeCommand(command) {
 
     // --- Performance metrics (Core Web Vitals + navigation timing) ---
     case 'performance':
-      return await getPerformance(await resolveAgentTabId(params.tabId));
+      return await getPerformance(await resolveAgentTabId(params.tabId), params);
 
     // --- Cleanup ---
     case 'cleanup':
@@ -939,7 +939,29 @@ async function selfHealAct(tabId, params = {}) {
 // === Performance metrics (Sprint 3) =========================================
 // Core Web Vitals (LCP/CLS/FCP) from buffered PerformanceObserver entries +
 // navigation timing (TTFB, DOMContentLoaded, load) + resource summary.
-async function getPerformance(tabId) {
+async function getPerformance(tabId, params = {}) {
+  // FCP / LCP are only recorded for VISIBLE tabs. Agent tabs are usually
+  // backgrounded (visibilityState=hidden) → those metrics come back null.
+  // With activate:true we foreground the tab + reload so paint is measured.
+  let activated = false;
+  if (params.activate) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      await chrome.windows.update(tab.windowId, { focused: true });
+      await chrome.tabs.update(tabId, { active: true });
+      await chrome.tabs.reload(tabId);
+      const deadline = Date.now() + (params.timeout || 15000);
+      while (Date.now() < deadline) {
+        const r = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: () => document.readyState })
+          .catch(() => null);
+        if (r?.[0]?.result === 'complete') break;
+        await new Promise((res) => setTimeout(res, 300));
+      }
+      await new Promise((res) => setTimeout(res, 1200)); // let LCP settle after load
+      activated = true;
+    } catch (_) { /* fall through to measure anyway */ }
+  }
+
   const r = await chrome.scripting.executeScript({
     target: { tabId }, world: 'MAIN',
     func: async () => {
@@ -973,11 +995,16 @@ async function getPerformance(tabId) {
         lcp_ms: round(acc.lcp),
         cls: Math.round(acc.cls * 1000) / 1000,
         resources: { count: res.length, transferBytes: bytes },
-        note: 'CWV from buffered PerformanceObserver (lab). Reload for a fresh measure. INP is interaction-based and not captured passively.'
+        visibility: document.visibilityState
       };
     }
   });
-  return r?.[0]?.result || { error: 'performance read failed' };
+  const out = r?.[0]?.result || { error: 'performance read failed' };
+  out.activated = activated;
+  out.note = (out.fcp_ms == null && !activated)
+    ? 'FCP/LCP are null because the agent tab is backgrounded (paint timing needs a visible tab). Re-call with activate:true to foreground+reload and capture them. INP not captured passively.'
+    : 'CWV from buffered PerformanceObserver (lab). INP is interaction-based and not captured passively.';
+  return out;
 }
 
 async function extractData(tabId, selector) {

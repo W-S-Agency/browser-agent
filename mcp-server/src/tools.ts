@@ -671,10 +671,12 @@ export function createTools(): Tool[] {
 
     {
       name: 'browser_performance',
-      description: 'Read performance metrics for the current page: Core Web Vitals (LCP, CLS, FCP) from buffered entries + navigation timing (TTFB, DOMContentLoaded, load) + resource count/bytes. Lab data from the real logged-in Chrome session — no PageSpeed API quota. Reload the page for a fresh measure.',
+      description: 'Read performance metrics for the current page: Core Web Vitals (LCP, CLS, FCP) + navigation timing (TTFB, DOMContentLoaded, load) + resource count/bytes. Lab data from the real logged-in Chrome session — no PageSpeed API quota. NOTE: FCP/LCP require a VISIBLE tab; agent tabs are backgrounded, so pass activate:true to foreground+reload the tab and capture them (this briefly takes focus).',
       inputSchema: {
         type: 'object',
         properties: {
+          activate: { type: 'boolean', description: 'Foreground the tab and reload to capture FCP/LCP (paint timing needs a visible tab). Briefly steals focus. Default false.' },
+          timeout: { type: 'number', description: 'Max wait for reload when activate=true (ms, default 15000)' },
           tabId: { type: 'number', description: 'Agent tab ID (optional)' },
           profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
@@ -1027,7 +1029,7 @@ export async function executeToolCall(
 
     case 'browser_performance':
       return await bridgeClient.executeCommand(
-        { type: 'performance', params: { tabId: params.tabId } },
+        { type: 'performance', params: { activate: params.activate, timeout: params.timeout, tabId: params.tabId } },
         profileId
       );
 
