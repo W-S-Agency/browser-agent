@@ -5,6 +5,7 @@
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { BridgeClient } from './bridge-client.js';
+import { buildDesignSystem } from './design-tokens.js';
 
 export function createTools(): Tool[] {
   return [
@@ -697,6 +698,19 @@ export function createTools(): Tool[] {
       },
     },
 
+    {
+      name: 'browser_extract_design_system',
+      description: 'Extract a full design system from the current page in one call and return ready-to-use artifacts: DESIGN.md (AI/human design-system doc), W3C DTCG tokens (Figma via Tokens Studio), Tailwind v4 @theme CSS + v3 config, and framework-agnostic CSS :root variables — plus brand logo/favicon. Built for 2p-builder / figma-handoff. Save the returned strings to files in your project.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'Scope the design extraction to a CSS selector (default: body)' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
     // === Cleanup ===
     {
       name: 'browser_cleanup',
@@ -1052,6 +1066,24 @@ export async function executeToolCall(
         { type: 'observe', params: { filter: params.filter, limit: params.limit, tabId: params.tabId } },
         profileId
       );
+
+    // Design system (Sprint 5) — composes existing extract_design/palette/seo, formats server-side
+    case 'browser_extract_design_system': {
+      const design = await bridgeClient.executeCommand(
+        { type: 'extract_design', params: { selector: params.selector, tabId: params.tabId } }, profileId);
+      const palette = await bridgeClient.executeCommand(
+        { type: 'extract_palette', params: { tabId: params.tabId } }, profileId);
+      let logo: string | undefined, favicon: string | undefined, title: string | undefined, url: string | undefined;
+      try {
+        const seo = await bridgeClient.executeCommand(
+          { type: 'extract_seo', params: { tabId: params.tabId } }, profileId);
+        logo = seo?.openGraph?.image || seo?.structuredData?.[0]?.['@graph']?.find?.((x: any) => x?.logo)?.logo?.url;
+        favicon = seo?.favicon;
+        title = seo?.openGraph?.siteName || seo?.title;
+        url = seo?.canonical || seo?.openGraph?.url;
+      } catch (_) { /* SEO optional — design system still works without brand */ }
+      return buildDesignSystem(design, palette, { url, title, logo, favicon });
+    }
 
     // Cleanup
     case 'browser_cleanup':
