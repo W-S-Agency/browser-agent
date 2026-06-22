@@ -257,6 +257,7 @@ function formatCommandDetail(command) {
     case 'upload_file': return `${p.selector} ← ${((p.files||[p.file]).filter(Boolean)).length} file(s)`;
     case 'act': return `${p.action || 'click'}: "${(p.description || '').substring(0, 30)}"`;
     case 'performance': return 'CWV + timing';
+    case 'observe': return p.filter || 'all interactive';
     case 'set_cookies': return `${(p.cookies || []).length} cookie(s)`;
     case 'read_console': return p.level || 'all';
     case 'wait_for': return p.selector || (p.text ? `"${p.text}"` : `${p.timeout || 10000}ms`);
@@ -546,6 +547,10 @@ async function executeCommand(command) {
     // --- Performance metrics (Core Web Vitals + navigation timing) ---
     case 'performance':
       return await getPerformance(await resolveAgentTabId(params.tabId), params);
+
+    // --- Observe: ranked interactive elements ("what can I do here") ---
+    case 'observe':
+      return await observePage(await resolveAgentTabId(params.tabId), params);
 
     // --- Cleanup ---
     case 'cleanup':
@@ -934,6 +939,45 @@ async function selfHealAct(tabId, params = {}) {
   if (!acted.found) return { error: `ref stale for "${description}"`, via: 'find' };
   if (acted.selector) await chrome.storage.local.set({ [cacheKey]: acted.selector });
   return { ...acted.result, via: cachedSelector ? 'find(healed)' : 'find', selector: acted.selector, ref: match.ref };
+}
+
+// === Observe (Sprint 4) =====================================================
+// Heuristic "what can I act on here": ranked interactive elements from the
+// accessibility tree (no LLM). Complements find()/act() — survey before acting.
+async function observePage(tabId, params = {}) {
+  const page = await accessibilityTree.readPage(tabId, { interactiveOnly: true });
+  const ROLE_RANK = {
+    button: 6, link: 5, textbox: 5, searchbox: 5, combobox: 4, checkbox: 4,
+    radio: 4, menuitem: 3, tab: 3, switch: 3, slider: 3, option: 2
+  };
+  const filter = params.filter ? String(params.filter).toLowerCase() : null;
+  let nodes = (page.tree || []).filter((n) => n.ref);
+  if (filter) {
+    nodes = nodes.filter((n) =>
+      `${n.name || ''} ${n.role || ''} ${n.value || ''}`.toLowerCase().includes(filter));
+  }
+  nodes = nodes
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => {
+      const na = a.n.name ? 1 : 0, nb = b.n.name ? 1 : 0;
+      if (nb !== na) return nb - na;                                   // named elements first
+      const ra = ROLE_RANK[a.n.role] || 1, rb = ROLE_RANK[b.n.role] || 1;
+      if (rb !== ra) return rb - ra;                                   // role priority
+      return a.i - b.i;                                                // DOM order
+    })
+    .map((x) => x.n);
+  const limit = params.limit || 30;
+  const elements = nodes.slice(0, limit).map((n) => ({
+    ref: n.ref, role: n.role, name: n.name, value: n.value
+  }));
+  return {
+    elements,
+    shown: elements.length,
+    total: nodes.length,
+    pageTitle: page.summary?.pageTitle,
+    url: page.summary?.pageUrl,
+    note: 'Ranked interactive elements (named-first, by role). Act on one via browser_act (by name) or click_ref/form_input (by ref).'
+  };
 }
 
 // === Performance metrics (Sprint 3) =========================================
