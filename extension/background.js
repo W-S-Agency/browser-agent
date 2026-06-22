@@ -181,7 +181,7 @@ function handleConnect() {
     browserInfo: {
       name: 'chrome',
       version: navigator.userAgent,
-      agentVersion: '2.0.0'
+      agentVersion: '2.1.0'
     }
   });
 
@@ -1146,7 +1146,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         connected: websocket && websocket.readyState === WebSocket.OPEN,
         profileId,
         alias: profileAlias,
-        version: '2.0.0',
+        version: '2.1.0',
         agentTabs: agentTabs.length,
         agentTabsList: agentTabs,
         groupId: tabGroupManager.groupId,
