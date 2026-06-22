@@ -555,6 +555,55 @@ export function createTools(): Tool[] {
       },
     },
 
+    {
+      name: 'browser_set_cookies',
+      description: 'Set cookies in the browser via CDP. Useful for restoring an auth session or injecting tokens. Pass an array of cookie objects ({name, value, domain, path?, secure?, httpOnly?, expires?}).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          cookies: {
+            type: 'array',
+            description: 'Array of cookie objects to set (CDP Network.CookieParam format: name, value, domain, url, path, secure, httpOnly, sameSite, expires).',
+            items: { type: 'object' },
+          },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+        required: ['cookies'],
+      },
+    },
+
+    // === Debugging ===
+    {
+      name: 'browser_read_console',
+      description: 'Read console output (log/info/warn/error) and uncaught errors captured from the page. Capture begins at page load — navigate or reload if you expected output that happened earlier. Useful for debugging forms, SPAs, and failed API calls.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          level: { type: 'string', enum: ['log', 'info', 'warn', 'error', 'debug'], description: 'Filter by level (optional, default all)' },
+          clear: { type: 'boolean', description: 'Clear the buffer after reading (default false)' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    {
+      name: 'browser_wait_for',
+      description: 'Wait until a CSS selector appears/disappears, or specific text appears on the page, or a fixed delay elapses. Returns when the condition is met or on timeout. Use for SPA timing instead of guessing.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector to wait for (optional)' },
+          text: { type: 'string', description: 'Text to wait for in page body (optional)' },
+          state: { type: 'string', enum: ['visible', 'hidden'], description: 'Wait for selector/text to be visible or hidden (default visible)' },
+          timeout: { type: 'number', description: 'Max wait in ms (default 10000). With no selector/text, waits exactly this long.' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
     // === Cleanup ===
     {
       name: 'browser_cleanup',
@@ -845,6 +894,28 @@ export async function executeToolCall(
     case 'browser_get_cookies':
       return await bridgeClient.executeCommand(
         { type: 'get_all_cookies', params: { domain: params.domain, tabId: params.tabId } },
+        profileId
+      );
+
+    case 'browser_set_cookies':
+      return await bridgeClient.executeCommand(
+        { type: 'set_cookies', params: { cookies: params.cookies, tabId: params.tabId } },
+        profileId
+      );
+
+    // Debugging
+    case 'browser_read_console':
+      return await bridgeClient.executeCommand(
+        { type: 'read_console', params: { level: params.level, clear: params.clear, tabId: params.tabId } },
+        profileId
+      );
+
+    case 'browser_wait_for':
+      return await bridgeClient.executeCommand(
+        { type: 'wait_for', params: {
+          selector: params.selector, text: params.text,
+          state: params.state, timeout: params.timeout, tabId: params.tabId
+        }},
         profileId
       );
 
