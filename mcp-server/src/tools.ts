@@ -683,6 +683,20 @@ export function createTools(): Tool[] {
       },
     },
 
+    {
+      name: 'browser_observe',
+      description: 'Survey what you can act on: returns a ranked list of interactive elements (buttons, links, inputs, …) from the accessibility tree — named elements first, then by role. No LLM. Use before acting to discover targets, then act via browser_act (by name) or click_ref/form_input (by ref). Optional filter narrows by text/role.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          filter: { type: 'string', description: 'Narrow to elements whose name/role/value contains this text (optional)' },
+          limit: { type: 'number', description: 'Max elements to return (default 30)' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
     // === Cleanup ===
     {
       name: 'browser_cleanup',
@@ -1030,6 +1044,12 @@ export async function executeToolCall(
     case 'browser_performance':
       return await bridgeClient.executeCommand(
         { type: 'performance', params: { activate: params.activate, timeout: params.timeout, tabId: params.tabId } },
+        profileId
+      );
+
+    case 'browser_observe':
+      return await bridgeClient.executeCommand(
+        { type: 'observe', params: { filter: params.filter, limit: params.limit, tabId: params.tabId } },
         profileId
       );
 
