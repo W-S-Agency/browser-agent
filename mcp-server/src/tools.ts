@@ -110,11 +110,12 @@ export function createTools(): Tool[] {
     // === JavaScript ===
     {
       name: 'browser_execute_js',
-      description: 'Execute JavaScript code on the page (runs in page context)',
+      description: 'Execute JavaScript code on the page (runs in page context). Top-level `return` and `await` are supported. Pass frameSelector to run the code INSIDE an iframe (works for same- and cross-origin frames) — e.g. for editors embedded in an iframe.',
       inputSchema: {
         type: 'object',
         properties: {
           code: { type: 'string', description: 'JavaScript code to execute' },
+          frameSelector: { type: 'string', description: 'Optional CSS selector of an <iframe> — code runs inside that frame instead of the top document.' },
           tabId: { type: 'number', description: 'Agent tab ID (optional)' },
           profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
         },
@@ -604,6 +605,53 @@ export function createTools(): Tool[] {
       },
     },
 
+    // === Network / Files (Sprint 2) ===
+    {
+      name: 'browser_read_network',
+      description: 'Read buffered network requests for the tab (URL, method, status, type, timing). Captured via webRequest from page load — navigate/reload if you expected earlier traffic. Metadata only: response BODIES are not captured (re-fetch the URL via execute_js if you need a body). Useful for debugging forms, failed API calls, redirects.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          filter: { type: 'string', description: 'Substring to match in the request URL (optional)' },
+          status: { type: 'number', description: 'Filter by exact HTTP status code (optional)' },
+          onlyFailed: { type: 'boolean', description: 'Only requests that failed (status 0 or >= 400)' },
+          clear: { type: 'boolean', description: 'Clear the buffer after reading (default false)' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
+
+    {
+      name: 'browser_download',
+      description: 'Download a file from a URL via the browser (logged-in session), wait for completion, and return the saved path. Use this instead of navigating to a download URL (which falsely reports a navigation timeout).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL of the file to download' },
+          filename: { type: 'string', description: 'Optional target filename (relative to the Downloads folder)' },
+          timeout: { type: 'number', description: 'Max wait for completion in ms (default 60000)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+        required: ['url'],
+      },
+    },
+
+    {
+      name: 'browser_upload_file',
+      description: 'Set local file(s) on a <input type=file> element (CDP DOM.setFileInputFiles), so the page treats them as user-selected. Files must be absolute paths on the machine running the browser.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector for the <input type=file> element' },
+          files: { type: 'array', items: { type: 'string' }, description: 'Absolute file path(s) to set on the input' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+        required: ['selector', 'files'],
+      },
+    },
+
     // === Cleanup ===
     {
       name: 'browser_cleanup',
@@ -678,7 +726,7 @@ export async function executeToolCall(
     // JavaScript
     case 'browser_execute_js':
       return await bridgeClient.executeCommand(
-        { type: 'execute_js', params: { code: params.code, tabId: params.tabId } },
+        { type: 'execute_js', params: { code: params.code, frameSelector: params.frameSelector, tabId: params.tabId } },
         profileId
       );
 
@@ -916,6 +964,28 @@ export async function executeToolCall(
           selector: params.selector, text: params.text,
           state: params.state, timeout: params.timeout, tabId: params.tabId
         }},
+        profileId
+      );
+
+    // Network / Files (Sprint 2)
+    case 'browser_read_network':
+      return await bridgeClient.executeCommand(
+        { type: 'read_network', params: {
+          filter: params.filter, status: params.status,
+          onlyFailed: params.onlyFailed, clear: params.clear, tabId: params.tabId
+        }},
+        profileId
+      );
+
+    case 'browser_download':
+      return await bridgeClient.executeCommand(
+        { type: 'download', params: { url: params.url, filename: params.filename, timeout: params.timeout } },
+        profileId
+      );
+
+    case 'browser_upload_file':
+      return await bridgeClient.executeCommand(
+        { type: 'upload_file', params: { selector: params.selector, files: params.files, tabId: params.tabId } },
         profileId
       );
 

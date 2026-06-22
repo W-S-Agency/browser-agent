@@ -30,6 +30,29 @@ let actionLog = [];
 // === Plan Tracking (for Side Panel) ===
 let currentPlan = null; // { name, steps: [{text, status}], currentStep }
 
+// === Network capture (webRequest ring-buffer, per tab) ===
+// No CDP attach → no conflict with the transient debugger used for cookies.
+// Captures request/response metadata (NOT bodies — re-fetch via execute_js if a body is needed).
+const NET_MAX = 200;                       // ring-buffer size per tab
+const networkBuffers = new Map();          // tabId -> [{url, method, status, type, fromCache, ts, error}]
+function _netPush(tabId, entry) {
+  if (tabId == null || tabId < 0) return;
+  let buf = networkBuffers.get(tabId);
+  if (!buf) { buf = []; networkBuffers.set(tabId, buf); }
+  buf.push(entry);
+  if (buf.length > NET_MAX) buf.splice(0, buf.length - NET_MAX);
+}
+if (chrome.webRequest) {
+  chrome.webRequest.onCompleted.addListener(
+    (d) => _netPush(d.tabId, { url: d.url, method: d.method, status: d.statusCode, type: d.type, fromCache: d.fromCache, ts: d.timeStamp }),
+    { urls: ['<all_urls>'] }
+  );
+  chrome.webRequest.onErrorOccurred.addListener(
+    (d) => _netPush(d.tabId, { url: d.url, method: d.method, status: 0, type: d.type, error: d.error, ts: d.timeStamp }),
+    { urls: ['<all_urls>'] }
+  );
+}
+
 
 // Keep Service Worker alive
 let keepAliveInterval = null;
@@ -59,6 +82,7 @@ chrome.runtime.onInstalled.addListener(init);
 // Clean up agent tabs on tab removal
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabGroupManager.onTabRemoved(tabId);
+  networkBuffers.delete(tabId);
 });
 
 // Intercept new tabs opened by agent tabs (window.open, target="_blank")
@@ -227,7 +251,10 @@ function formatCommandDetail(command) {
     case 'screenshot_element': return p.ref || p.selector || '';
     case 'scroll': return `${p.direction || 'down'} ${p.amount || 500}px`;
     case 'scroll_to': return p.ref || '';
-    case 'execute_js': return (p.code || '').substring(0, 40);
+    case 'execute_js': return (p.frameSelector ? `[${p.frameSelector}] ` : '') + (p.code || '').substring(0, 40);
+    case 'read_network': return p.filter || (p.onlyFailed ? 'failed' : 'all');
+    case 'download': return p.url || '';
+    case 'upload_file': return `${p.selector} ← ${((p.files||[p.file]).filter(Boolean)).length} file(s)`;
     case 'set_cookies': return `${(p.cookies || []).length} cookie(s)`;
     case 'read_console': return p.level || 'all';
     case 'wait_for': return p.selector || (p.text ? `"${p.text}"` : `${p.timeout || 10000}ms`);
@@ -277,7 +304,7 @@ async function executeCommand(command) {
 
     // --- JavaScript ---
     case 'execute_js':
-      return await executeJS(await resolveAgentTabId(params.tabId), params.code);
+      return await executeJS(await resolveAgentTabId(params.tabId), params.code, params.frameSelector);
 
     // --- Data extraction ---
     case 'extract':
@@ -498,6 +525,18 @@ async function executeCommand(command) {
     case 'wait_for':
       return await waitFor(await resolveAgentTabId(params.tabId), params);
 
+    // --- Network request reading (webRequest buffer) ---
+    case 'read_network':
+      return await readNetwork(await resolveAgentTabId(params.tabId), params);
+
+    // --- Download a file (chrome.downloads) ---
+    case 'download':
+      return await downloadFile(params);
+
+    // --- Upload file(s) into a <input type=file> (CDP) ---
+    case 'upload_file':
+      return await uploadFile(await resolveAgentTabId(params.tabId), params);
+
     // --- Cleanup ---
     case 'cleanup':
       await tabGroupManager.cleanup();
@@ -606,25 +645,32 @@ async function takeScreenshot(tabId, params = {}) {
 }
 
 // --- JavaScript Execution ---
-async function executeJS(tabId, code) {
+// Auto-wrap so top-level `return` / `await` work; runs in MAIN world.
+const _JS_RUNNER = async (codeString) => {
   try {
+    return await eval(codeString);
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      return await eval('(async () => {' + codeString + '})()');
+    }
+    throw e;
+  }
+};
+
+async function executeJS(tabId, code, frameSelector) {
+  try {
+    const target = { tabId };
+    // iframe targeting: resolve the iframe's frameId and run inside it
+    // (works for same- AND cross-origin frames via chrome.scripting).
+    if (frameSelector) {
+      const frameId = await resolveFrameId(tabId, frameSelector);
+      if (frameId == null) return { error: `iframe not found: ${frameSelector}` };
+      target.frameIds = [frameId];
+    }
     const result = await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       world: 'MAIN',
-      func: async (codeString) => {
-        // Auto-wrap: support top-level `return` and top-level `await`.
-        // Plain expressions/statements eval directly; if that throws a
-        // SyntaxError (illegal return / await at top level), re-run wrapped
-        // in an async IIFE so `return X` and `await X` work as expected.
-        try {
-          return await eval(codeString);
-        } catch (e) {
-          if (e instanceof SyntaxError) {
-            return await eval('(async () => {' + codeString + '})()');
-          }
-          throw e;
-        }
-      },
+      func: _JS_RUNNER,
       args: [code]
     });
     return result?.[0]?.result ?? null;
@@ -632,6 +678,22 @@ async function executeJS(tabId, code) {
     console.error('[Browser Agent v2] executeJS error:', error);
     return { error: error.message };
   }
+}
+
+// Map a CSS selector for an <iframe> to its chrome frameId (via src URL match).
+async function resolveFrameId(tabId, frameSelector) {
+  const srcRes = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (sel) => { const el = document.querySelector(sel); return el ? (el.src || '') : null; },
+    args: [frameSelector]
+  });
+  const src = srcRes?.[0]?.result;
+  if (src == null) return null;                 // iframe element not found
+  const frames = await chrome.webNavigation.getAllFrames({ tabId });
+  // exact src match first; fall back to first non-top frame if src is blank (srcdoc/about:blank)
+  let f = frames.find(fr => fr.url === src && fr.frameId !== 0);
+  if (!f && !src) f = frames.find(fr => fr.frameId !== 0);
+  return f ? f.frameId : null;
 }
 
 // --- Data Extraction ---
@@ -692,6 +754,66 @@ async function waitFor(tabId, params = {}) {
     await new Promise((r) => setTimeout(r, interval));
   }
   return { ok: false, timedOut: true, waited: Date.now() - start };
+}
+
+// --- Read buffered network requests for a tab (webRequest, metadata only) ---
+async function readNetwork(tabId, params = {}) {
+  let entries = (networkBuffers.get(tabId) || []).slice();
+  if (params.filter) {
+    const needle = String(params.filter).toLowerCase();
+    entries = entries.filter((e) => (e.url || '').toLowerCase().includes(needle));
+  }
+  if (params.status) entries = entries.filter((e) => e.status === params.status);
+  if (params.onlyFailed) entries = entries.filter((e) => e.status === 0 || e.status >= 400);
+  if (params.clear) networkBuffers.set(tabId, []);
+  return {
+    entries,
+    count: entries.length,
+    note: entries.length === 0
+      ? 'No requests buffered for this tab. Capture starts at page load; navigate/reload. Bodies are not captured — re-fetch via execute_js if needed.'
+      : 'Metadata only (no response bodies). For a body, re-fetch the URL via execute_js.'
+  };
+}
+
+// --- Download a file via chrome.downloads, wait for completion, return path ---
+async function downloadFile(params = {}) {
+  const url = params.url;
+  if (!url) return { error: 'url is required' };
+  const id = await chrome.downloads.download({ url, filename: params.filename, saveAs: false });
+  const timeout = params.timeout || 60000;
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const [item] = await chrome.downloads.search({ id });
+    if (item && item.state === 'complete') {
+      return { ok: true, id, path: item.filename, size: item.fileSize, mime: item.mime, url: item.finalUrl || item.url };
+    }
+    if (item && item.state === 'interrupted') {
+      return { ok: false, id, error: item.error || 'interrupted', url };
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return { ok: false, id, error: 'download timeout', url };
+}
+
+// --- Upload local file(s) into a <input type=file> via CDP DOM.setFileInputFiles ---
+async function uploadFile(tabId, params = {}) {
+  const selector = params.selector;
+  const files = params.files || (params.file ? [params.file] : []);
+  if (!selector) return { error: 'selector is required (CSS for the <input type=file>)' };
+  if (!files.length) return { error: 'files is required (array of absolute file paths)' };
+  try { await chrome.debugger.attach({ tabId }, '1.3'); } catch (_) {}
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'DOM.enable', {});
+    const { root } = await chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', { depth: 0 });
+    const { nodeId } = await chrome.debugger.sendCommand({ tabId }, 'DOM.querySelector', { nodeId: root.nodeId, selector });
+    if (!nodeId) return { ok: false, error: `file input not found: ${selector}` };
+    await chrome.debugger.sendCommand({ tabId }, 'DOM.setFileInputFiles', { nodeId, files });
+    return { ok: true, selector, files };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  } finally {
+    try { await chrome.debugger.detach({ tabId }); } catch (_) {}
+  }
 }
 
 async function extractData(tabId, selector) {
