@@ -228,6 +228,9 @@ function formatCommandDetail(command) {
     case 'scroll': return `${p.direction || 'down'} ${p.amount || 500}px`;
     case 'scroll_to': return p.ref || '';
     case 'execute_js': return (p.code || '').substring(0, 40);
+    case 'set_cookies': return `${(p.cookies || []).length} cookie(s)`;
+    case 'read_console': return p.level || 'all';
+    case 'wait_for': return p.selector || (p.text ? `"${p.text}"` : `${p.timeout || 10000}ms`);
     case 'extract_design': return p.selector || 'body';
     case 'extract_seo': return 'full audit';
     case 'mouse_click': return `(${p.x}, ${p.y})`;
@@ -474,6 +477,27 @@ async function executeCommand(command) {
         parameterize: params.parameterize !== false
       });
 
+    // --- Cookies: set (CDP) ---
+    case 'set_cookies': {
+      const tabId = await resolveAgentTabId(params.tabId);
+      try { await chrome.debugger.attach({ tabId }, '1.3'); } catch (_) {}
+      try {
+        const cookies = params.cookies || [];
+        await chrome.debugger.sendCommand({ tabId }, 'Network.setCookies', { cookies });
+        return { set: cookies.length };
+      } finally {
+        try { await chrome.debugger.detach({ tabId }); } catch (_) {}
+      }
+    }
+
+    // --- Console log reading (MAIN-world capture buffer) ---
+    case 'read_console':
+      return await readConsole(await resolveAgentTabId(params.tabId), params);
+
+    // --- Wait for condition (selector / text / timeout) ---
+    case 'wait_for':
+      return await waitFor(await resolveAgentTabId(params.tabId), params);
+
     // --- Cleanup ---
     case 'cleanup':
       await tabGroupManager.cleanup();
@@ -587,7 +611,20 @@ async function executeJS(tabId, code) {
     const result = await chrome.scripting.executeScript({
       target: { tabId },
       world: 'MAIN',
-      func: (codeString) => eval(codeString),
+      func: async (codeString) => {
+        // Auto-wrap: support top-level `return` and top-level `await`.
+        // Plain expressions/statements eval directly; if that throws a
+        // SyntaxError (illegal return / await at top level), re-run wrapped
+        // in an async IIFE so `return X` and `await X` work as expected.
+        try {
+          return await eval(codeString);
+        } catch (e) {
+          if (e instanceof SyntaxError) {
+            return await eval('(async () => {' + codeString + '})()');
+          }
+          throw e;
+        }
+      },
       args: [code]
     });
     return result?.[0]?.result ?? null;
@@ -598,6 +635,65 @@ async function executeJS(tabId, code) {
 }
 
 // --- Data Extraction ---
+// --- Read console buffer captured by console-capture.js (MAIN world) ---
+async function readConsole(tabId, params = {}) {
+  const level = params.level || null;   // 'log' | 'info' | 'warn' | 'error'
+  const clear = params.clear === true;
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: (lvl, doClear) => {
+      const buf = (window.__BA_CONSOLE__ && window.__BA_CONSOLE__.entries) || [];
+      const out = lvl ? buf.filter((e) => e.level === lvl) : buf.slice();
+      if (doClear && window.__BA_CONSOLE__) window.__BA_CONSOLE__.entries = [];
+      return out;
+    },
+    args: [level, clear]
+  });
+  const entries = result?.[0]?.result || [];
+  return {
+    entries,
+    count: entries.length,
+    note: entries.length === 0
+      ? 'No console entries buffered. Capture starts at page load; navigate/reload if you expected output.'
+      : undefined
+  };
+}
+
+// --- Wait for a selector/text to appear or disappear, or a fixed delay ---
+async function waitFor(tabId, params = {}) {
+  const { selector = null, text = null, state = 'visible', timeout = 10000 } = params;
+  const interval = 250;
+  const start = Date.now();
+
+  // Plain delay if no condition given
+  if (!selector && !text) {
+    await new Promise((r) => setTimeout(r, timeout));
+    return { ok: true, waited: timeout };
+  }
+
+  while (Date.now() - start < timeout) {
+    const present = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: (sel, txt) => {
+        if (sel) {
+          const el = document.querySelector(sel);
+          if (!el) return false;
+          return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+        }
+        return !!(document.body && document.body.innerText.includes(txt));
+      },
+      args: [selector, text]
+    }).then((r) => r?.[0]?.result === true).catch(() => false);
+
+    const satisfied = state === 'hidden' ? !present : present;
+    if (satisfied) return { ok: true, waited: Date.now() - start };
+    await new Promise((r) => setTimeout(r, interval));
+  }
+  return { ok: false, timedOut: true, waited: Date.now() - start };
+}
+
 async function extractData(tabId, selector) {
   const result = await chrome.scripting.executeScript({
     target: { tabId },
@@ -622,12 +718,26 @@ async function getText(tabId, selector) {
     target: { tabId },
     func: (sel) => {
       const element = document.querySelector(sel);
-      if (!element) throw new Error(`Element not found: ${sel}`);
+      if (!element) return { __missing: true };
       return element.textContent.trim();
     },
     args: [selector]
   });
-  return result[0].result;
+  const value = result?.[0]?.result;
+
+  // CDP-fallback: some sites (e.g. Notion) block raw textContent and return
+  // empty / nothing. Fall back to the accessibility tree, which still works.
+  const empty = value == null || value.__missing || (typeof value === 'string' && value.length === 0);
+  if (empty) {
+    try {
+      const page = await accessibilityTree.readPage(tabId, { interactiveOnly: false });
+      const text = typeof page === 'string' ? page : (page?.text || JSON.stringify(page));
+      return { text, source: 'accessibility-tree', fallback: true };
+    } catch (_) {
+      if (value?.__missing) throw new Error(`Element not found: ${selector}`);
+    }
+  }
+  return value;
 }
 
 // --- Scroll ---
