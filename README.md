@@ -104,6 +104,8 @@ All Chromium-based browsers supported via Chrome Extension API.
 
 ## 📊 Available Tools
 
+> 📖 **Full reference:** [`TOOLS.md`](./TOOLS.md) — all 50 tools with parameters, auto-generated from `mcp-server/src/tools.ts` (`npm run docs:tools`).
+
 All tools support **profile aliases** - use friendly names like "work" or "personal" instead of full profile IDs.
 
 ```javascript
