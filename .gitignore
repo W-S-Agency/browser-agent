@@ -34,3 +34,14 @@ bridge/daemon/
 *.tmp
 *.temp
 .cache/
+
+# PCM layer + Drive-only planning docs (D-PROJ-003) — НЕ в публичный репо
+# (внутренний контекст / имена клиентов; живут только на Drive-копии G:)
+docs/
+.ai/
+wiki/
+ContextCard.md
+CLAUDE.md
+ROADMAP.md
+HANDOFF.md
+HANDOFF-MT-2p-integration.md
