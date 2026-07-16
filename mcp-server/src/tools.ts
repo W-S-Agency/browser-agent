@@ -4,6 +4,7 @@
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
+import Ajv from 'ajv';
 import { BridgeClient } from './bridge-client.js';
 import { buildDesignSystem } from './design-tokens.js';
 
@@ -722,6 +723,62 @@ export function createTools(): Tool[] {
         },
       },
     },
+
+    // === Sprint 6: small parity (fill_form, extract_validated, handle_dialog) ===
+    {
+      name: 'browser_fill_form',
+      description: 'Fill multiple form fields in one call. Pass an array of {ref, value} (refs from browser_read_page / browser_find). Each field goes through the same smart form_input (auto-detects text/select/checkbox/radio; dispatches input+change+blur for framework reactivity). Returns per-field results; a failed field does NOT abort the rest. Use after browser_observe/read_page to fill a whole form at once instead of many browser_form_input calls.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          fields: {
+            type: 'array',
+            description: 'Fields to fill, in order. Each item: {ref, value}.',
+            items: {
+              type: 'object',
+              properties: {
+                ref: { type: 'string', description: 'Element ref from browser_read_page / browser_find (e.g. "ref_5")' },
+                value: { type: 'string', description: 'Value to set (checkbox: "true"/"false"; select: option value or text)' },
+              },
+              required: ['ref', 'value'],
+            },
+          },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+        required: ['fields'],
+      },
+    },
+
+    {
+      name: 'browser_extract_validated',
+      description: 'Extract data from the page and validate it against a JSON Schema (ajv) server-side. Provide either `code` (JavaScript that returns the data — top-level return/await supported) OR `selector` (extract element data). The result is validated against `schema`; returns {data, valid, errors}. Use when you need a guaranteed shape for downstream steps (e.g. scraping structured records) and want an explicit pass/fail instead of eyeballing the output.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          schema: { type: 'object', description: 'JSON Schema (draft-07) to validate the extracted data against.' },
+          code: { type: 'string', description: 'JavaScript that returns the data to validate (alternative to selector). Runs in page context.' },
+          selector: { type: 'string', description: 'CSS selector to extract data from (alternative to code).' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+        required: ['schema'],
+      },
+    },
+
+    {
+      name: 'browser_handle_dialog',
+      description: 'Arm automatic handling of the NEXT native JS dialog (alert / confirm / prompt) on the tab, then perform the action that triggers it. accept:true confirms/accepts (default), accept:false dismisses/cancels; promptText fills a prompt(). Call this JUST BEFORE the click/action that opens the dialog, and do NOT run other browser tools on the same tab in between — a CDP-based tool (screenshot / cookies / upload) detaches the debugger and cancels the arm. One-shot (auto-disarms after one dialog or 30s). Note: browser beforeunload prompts are not covered.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          accept: { type: 'boolean', description: 'Accept/confirm the dialog (true, default) or dismiss/cancel it (false).' },
+          promptText: { type: 'string', description: 'Text to enter into a prompt() dialog (optional).' },
+          tabId: { type: 'number', description: 'Agent tab ID (optional)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional)' },
+        },
+      },
+    },
   ];
 }
 
@@ -1088,6 +1145,62 @@ export async function executeToolCall(
     // Cleanup
     case 'browser_cleanup':
       return await bridgeClient.executeCommand({ type: 'cleanup', params: {} }, profileId);
+
+    // === Sprint 6: small parity ===
+    // fill_form — server-side composition of form_input (extract_design_system precedent), no extension change.
+    case 'browser_fill_form': {
+      const fields = Array.isArray(params.fields) ? params.fields : [];
+      const results: any[] = [];
+      for (const f of fields) {
+        try {
+          const r = await bridgeClient.executeCommand(
+            { type: 'form_input', params: { ref: f.ref, value: f.value, tabId: params.tabId } },
+            profileId
+          );
+          // form_input returns {success:true,...} on success but swallows a not-found/GC'd ref
+          // into a null result (the MAIN-world throw is not propagated by chrome.scripting),
+          // so a null/failed result must count as NOT ok — otherwise `filled` lies.
+          const ok = r != null && r.success !== false;
+          results.push({ ref: f.ref, ok, result: r });
+        } catch (e: any) {
+          results.push({ ref: f.ref, ok: false, error: e?.message || String(e) });
+        }
+      }
+      return { total: fields.length, filled: results.filter((r) => r.ok).length, results };
+    }
+
+    // extract_validated — extract (via code or selector) then ajv-validate server-side.
+    case 'browser_extract_validated': {
+      if (!params.code && !params.selector) {
+        throw new Error('browser_extract_validated requires either `code` or `selector`');
+      }
+      const data = params.code
+        ? await bridgeClient.executeCommand(
+            { type: 'execute_js', params: { code: params.code, tabId: params.tabId } }, profileId)
+        : await bridgeClient.executeCommand(
+            { type: 'extract', params: { selector: params.selector, tabId: params.tabId } }, profileId);
+      // execute_js/extract report failures as {error} instead of throwing — surface that
+      // distinctly rather than validating an error object against the schema (misleading).
+      if (data && typeof data === 'object' && (data as any).error) {
+        return { data, valid: false, extractionError: (data as any).error };
+      }
+      const ajv = new Ajv({ allErrors: true, strict: false });
+      try {
+        const validate = ajv.compile(params.schema);
+        const valid = !!validate(data);
+        return { data, valid, errors: validate.errors || null };
+      } catch (e: any) {
+        // Bad schema — report rather than throw, so the extracted data is still returned.
+        return { data, valid: false, schemaError: e?.message || String(e) };
+      }
+    }
+
+    // handle_dialog — extension-backed (CDP Page.handleJavaScriptDialog).
+    case 'browser_handle_dialog':
+      return await bridgeClient.executeCommand(
+        { type: 'handle_dialog', params: { accept: params.accept !== false, promptText: params.promptText, tabId: params.tabId } },
+        profileId
+      );
 
     default:
       throw new Error(`Unknown tool: ${toolName}`);

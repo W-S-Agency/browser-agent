@@ -1,7 +1,7 @@
 # Browser Agent — MCP Tools Reference
 
 > ⚙️ **Auto-generated — do not edit by hand.** Regenerate with `npm run docs:tools` (from `mcp-server/`).
-> Source of truth: `mcp-server/src/tools.ts`. Package `@ws-workspace/browser-agent-mcp` v2.1.0 · **50 tools** in 18 categories.
+> Source of truth: `mcp-server/src/tools.ts`. Package `@ws-workspace/browser-agent-mcp` v2.1.0 · **53 tools** in 19 categories.
 
 ## Categories
 
@@ -23,6 +23,7 @@
 - [Network / Files (Sprint 2)](#network-files-sprint-2) — 3
 - [Self-healing action + Performance (Sprint 3)](#self-healing-action-performance-sprint-3) — 4
 - [Cleanup](#cleanup) — 1
+- [Sprint 6: small parity (fill_form, extract_validated, handle_dialog)](#sprint-6-small-parity-fill-form-extract-validated-handle-dialog) — 3
 
 ## Navigation
 
@@ -567,4 +568,39 @@ Close all agent tabs and clean up resources. Use when done with browser automati
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
+| `profileId` | string | no | Profile ID or alias (optional) |
+
+## Sprint 6: small parity (fill_form, extract_validated, handle_dialog)
+
+### `browser_fill_form`
+
+Fill multiple form fields in one call. Pass an array of {ref, value} (refs from browser_read_page / browser_find). Each field goes through the same smart form_input (auto-detects text/select/checkbox/radio; dispatches input+change+blur for framework reactivity). Returns per-field results; a failed field does NOT abort the rest. Use after browser_observe/read_page to fill a whole form at once instead of many browser_form_input calls.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `fields` | array | yes | Fields to fill, in order. Each item: {ref, value}. |
+| `tabId` | number | no | Agent tab ID (optional) |
+| `profileId` | string | no | Profile ID or alias (optional) |
+
+### `browser_extract_validated`
+
+Extract data from the page and validate it against a JSON Schema (ajv) server-side. Provide either `code` (JavaScript that returns the data — top-level return/await supported) OR `selector` (extract element data). The result is validated against `schema`; returns {data, valid, errors}. Use when you need a guaranteed shape for downstream steps (e.g. scraping structured records) and want an explicit pass/fail instead of eyeballing the output.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `schema` | object | yes | JSON Schema (draft-07) to validate the extracted data against. |
+| `code` | string | no | JavaScript that returns the data to validate (alternative to selector). Runs in page context. |
+| `selector` | string | no | CSS selector to extract data from (alternative to code). |
+| `tabId` | number | no | Agent tab ID (optional) |
+| `profileId` | string | no | Profile ID or alias (optional) |
+
+### `browser_handle_dialog`
+
+Arm automatic handling of the NEXT native JS dialog (alert / confirm / prompt) on the tab, then perform the action that triggers it. accept:true confirms/accepts (default), accept:false dismisses/cancels; promptText fills a prompt(). Call this JUST BEFORE the click/action that opens the dialog, and do NOT run other browser tools on the same tab in between — a CDP-based tool (screenshot / cookies / upload) detaches the debugger and cancels the arm. One-shot (auto-disarms after one dialog or 30s). Note: browser beforeunload prompts are not covered.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `accept` | boolean | no | Accept/confirm the dialog (true, default) or dismiss/cancel it (false). |
+| `promptText` | string | no | Text to enter into a prompt() dialog (optional). |
+| `tabId` | number | no | Agent tab ID (optional) |
 | `profileId` | string | no | Profile ID or alias (optional) |

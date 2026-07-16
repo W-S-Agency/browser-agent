@@ -12,11 +12,17 @@
     "prepare": "npm run build",
     "docs:tools": "node scripts/gen-tools-doc.mjs"
   },
-  "keywords": ["mcp", "browser-agent", "automation", "ws-workspace"],
+  "keywords": [
+    "mcp",
+    "browser-agent",
+    "automation",
+    "ws-workspace"
+  ],
   "author": "WS Agency",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
+    "ajv": "^8.20.0",
     "axios": "^1.6.7"
   },
   "devDependencies": {

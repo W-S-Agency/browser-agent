@@ -552,6 +552,10 @@ async function executeCommand(command) {
     case 'observe':
       return await observePage(await resolveAgentTabId(params.tabId), params);
 
+    // --- Native JS dialog handling (arm one-shot: alert/confirm/prompt) ---
+    case 'handle_dialog':
+      return await handleDialog(await resolveAgentTabId(params.tabId), params.accept !== false, params.promptText);
+
     // --- Cleanup ---
     case 'cleanup':
       await tabGroupManager.cleanup();
@@ -561,6 +565,57 @@ async function executeCommand(command) {
     default:
       throw new Error(`Unknown command type: ${type}`);
   }
+}
+
+// === Sprint 6: native JS dialog handling (CDP Page.handleJavaScriptDialog) ===
+// Arms a one-shot auto-handler for the NEXT alert/confirm/prompt on a tab. Call
+// handle_dialog JUST BEFORE the action that opens the dialog, then trigger it.
+// Limitation: another CDP command that detaches the debugger mid-arm cancels the arm;
+// beforeunload prompts are browser-native and not covered.
+const _armedDialogs = new Map(); // tabId -> { accept, promptText, timer }
+let _dialogListenerRegistered = false;
+
+function _disarmDialog(tabId) {
+  const armed = _armedDialogs.get(tabId);
+  if (armed && armed.timer) clearTimeout(armed.timer);
+  _armedDialogs.delete(tabId);
+  try { chrome.debugger.detach({ tabId }); } catch (_) {}
+}
+
+function _ensureDialogListener() {
+  if (_dialogListenerRegistered) return;
+  _dialogListenerRegistered = true;
+  chrome.debugger.onEvent.addListener(async (source, method) => {
+    if (method !== 'Page.javascriptDialogOpening') return;
+    const armed = _armedDialogs.get(source.tabId);
+    if (!armed) return;
+    const cmd = { accept: armed.accept };
+    if (armed.promptText != null) cmd.promptText = String(armed.promptText);
+    try {
+      await chrome.debugger.sendCommand({ tabId: source.tabId }, 'Page.handleJavaScriptDialog', cmd);
+    } catch (_) {}
+    _disarmDialog(source.tabId);
+  });
+}
+
+async function handleDialog(tabId, accept, promptText) {
+  _ensureDialogListener();
+  // Re-arm on the same tab: clear the prior timer so its stale 30s fire can't
+  // disarm (and detach) this fresh arm.
+  const prior = _armedDialogs.get(tabId);
+  if (prior && prior.timer) clearTimeout(prior.timer);
+  try {
+    try { await chrome.debugger.attach({ tabId }, '1.3'); } catch (_) { /* already attached is fine */ }
+    await chrome.debugger.sendCommand({ tabId }, 'Page.enable', {});
+  } catch (e) {
+    // Arm setup failed — clean up so we don't leak an attached debugger with no auto-disarm.
+    _armedDialogs.delete(tabId);
+    try { await chrome.debugger.detach({ tabId }); } catch (_) {}
+    throw new Error(`handle_dialog: could not arm dialog handler (${e?.message || e}). Is DevTools open or another debugger attached to this tab?`);
+  }
+  const timer = setTimeout(() => _disarmDialog(tabId), 30000);
+  _armedDialogs.set(tabId, { accept, promptText, timer });
+  return { armed: true, tabId, accept, promptText: promptText ?? null };
 }
 
 /**
