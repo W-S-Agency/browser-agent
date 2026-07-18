@@ -32,6 +32,8 @@ const MAX_RETRIES = 3;    // Wait up to 6 seconds for reconnect
 
 export class BridgeClient {
   private client: AxiosInstance;
+  private authToken: string | null = null;
+  private tokenPromise: Promise<string | null> | null = null;
 
   constructor(baseURL: string) {
     this.client = axios.create({
@@ -44,6 +46,28 @@ export class BridgeClient {
   }
 
   /**
+   * Fetch (and cache) the bridge auth token. The bridge is loopback-only and
+   * serves the token via GET /auth/token to localhost processes; mutating
+   * endpoints (/execute) require it as X-Auth-Token (Safety v0 hardening).
+   */
+  private getAuthToken(force = false): Promise<string | null> {
+    if (this.authToken && !force) return Promise.resolve(this.authToken);
+    if (!this.tokenPromise) {
+      // single in-flight fetch shared by concurrent callers
+      this.tokenPromise = this.client
+        .get<{ success: boolean; token: string }>('/auth/token')
+        .then((r) => r.data?.token || null)
+        .catch(() => null) // older bridge without auth — header simply omitted
+        .then((token) => {
+          this.authToken = token;
+          this.tokenPromise = null;
+          return token;
+        });
+    }
+    return this.tokenPromise;
+  }
+
+  /**
    * Execute command on browser with auto-retry
    * If no profile connected (Service Worker sleeping), waits and retries
    */
@@ -52,10 +76,11 @@ export class BridgeClient {
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
+        const token = await this.getAuthToken();
         const response = await this.client.post<CommandResult>('/execute', {
           command,
           profileId,
-        });
+        }, { headers: token ? { 'X-Auth-Token': token } : {} });
 
         if (!response.data.success) {
           throw new Error(response.data.error || 'Command execution failed');
@@ -64,6 +89,14 @@ export class BridgeClient {
         return response.data.result;
       } catch (error) {
         if (axios.isAxiosError(error)) {
+          // 401 = stale/missing token (bridge restarted with a new one) — refresh and retry
+          if (error.response?.status === 401 && attempt < MAX_RETRIES) {
+            await this.sleep(500); // avoid a tight 401 burst
+            await this.getAuthToken(true);
+            lastError = new Error('Bridge auth token was stale — refreshed');
+            continue;
+          }
+
           // 404 = no profile connected — Service Worker might be waking up
           if (error.response?.status === 404 && attempt < MAX_RETRIES) {
             console.error(
