@@ -181,7 +181,7 @@ function handleConnect() {
     browserInfo: {
       name: 'chrome',
       version: navigator.userAgent,
-      agentVersion: '2.1.0'
+      agentVersion: '2.2.0'
     }
   });
 
@@ -552,6 +552,10 @@ async function executeCommand(command) {
     case 'observe':
       return await observePage(await resolveAgentTabId(params.tabId), params);
 
+    // --- Native JS dialog handling (arm one-shot: alert/confirm/prompt) ---
+    case 'handle_dialog':
+      return await handleDialog(await resolveAgentTabId(params.tabId), params.accept !== false, params.promptText);
+
     // --- Cleanup ---
     case 'cleanup':
       await tabGroupManager.cleanup();
@@ -561,6 +565,57 @@ async function executeCommand(command) {
     default:
       throw new Error(`Unknown command type: ${type}`);
   }
+}
+
+// === Sprint 6: native JS dialog handling (CDP Page.handleJavaScriptDialog) ===
+// Arms a one-shot auto-handler for the NEXT alert/confirm/prompt on a tab. Call
+// handle_dialog JUST BEFORE the action that opens the dialog, then trigger it.
+// Limitation: another CDP command that detaches the debugger mid-arm cancels the arm;
+// beforeunload prompts are browser-native and not covered.
+const _armedDialogs = new Map(); // tabId -> { accept, promptText, timer }
+let _dialogListenerRegistered = false;
+
+function _disarmDialog(tabId) {
+  const armed = _armedDialogs.get(tabId);
+  if (armed && armed.timer) clearTimeout(armed.timer);
+  _armedDialogs.delete(tabId);
+  try { chrome.debugger.detach({ tabId }); } catch (_) {}
+}
+
+function _ensureDialogListener() {
+  if (_dialogListenerRegistered) return;
+  _dialogListenerRegistered = true;
+  chrome.debugger.onEvent.addListener(async (source, method) => {
+    if (method !== 'Page.javascriptDialogOpening') return;
+    const armed = _armedDialogs.get(source.tabId);
+    if (!armed) return;
+    const cmd = { accept: armed.accept };
+    if (armed.promptText != null) cmd.promptText = String(armed.promptText);
+    try {
+      await chrome.debugger.sendCommand({ tabId: source.tabId }, 'Page.handleJavaScriptDialog', cmd);
+    } catch (_) {}
+    _disarmDialog(source.tabId);
+  });
+}
+
+async function handleDialog(tabId, accept, promptText) {
+  _ensureDialogListener();
+  // Re-arm on the same tab: clear the prior timer so its stale 30s fire can't
+  // disarm (and detach) this fresh arm.
+  const prior = _armedDialogs.get(tabId);
+  if (prior && prior.timer) clearTimeout(prior.timer);
+  try {
+    try { await chrome.debugger.attach({ tabId }, '1.3'); } catch (_) { /* already attached is fine */ }
+    await chrome.debugger.sendCommand({ tabId }, 'Page.enable', {});
+  } catch (e) {
+    // Arm setup failed — clean up so we don't leak an attached debugger with no auto-disarm.
+    _armedDialogs.delete(tabId);
+    try { await chrome.debugger.detach({ tabId }); } catch (_) {}
+    throw new Error(`handle_dialog: could not arm dialog handler (${e?.message || e}). Is DevTools open or another debugger attached to this tab?`);
+  }
+  const timer = setTimeout(() => _disarmDialog(tabId), 30000);
+  _armedDialogs.set(tabId, { accept, promptText, timer });
+  return { armed: true, tabId, accept, promptText: promptText ?? null };
 }
 
 /**
@@ -986,67 +1041,102 @@ async function observePage(tabId, params = {}) {
 async function getPerformance(tabId, params = {}) {
   // FCP / LCP are only recorded for VISIBLE tabs. Agent tabs are usually
   // backgrounded (visibilityState=hidden) → those metrics come back null.
-  // With activate:true we foreground the tab + reload so paint is measured.
+  // Paint timing needs VISIBILITY, not focus:
+  //   activate:true → measure a FRESH load in a temporary UNFOCUSED popup
+  //     window — no OS-focus steal, the user's active tab is untouched.
+  //   focus:true → legacy escalation: foreground THIS tab + reload (steals
+  //     focus). Only needed if the passive window came back occluded.
+  const collector = async () => {
+    // LCP / CLS / paint are observer-only entry types — getEntriesByType()
+    // does NOT return them. Use buffered PerformanceObserver to read past entries.
+    const acc = { fcp: null, lcp: null, cls: 0 };
+    const observers = [];
+    const watch = (type, cb) => {
+      try {
+        const o = new PerformanceObserver((list) => { for (const e of list.getEntries()) cb(e); });
+        o.observe({ type, buffered: true });
+        observers.push(o);
+      } catch (_) { /* type unsupported */ }
+    };
+    watch('paint', (e) => { if (e.name === 'first-contentful-paint') acc.fcp = e.startTime; });
+    watch('largest-contentful-paint', (e) => { acc.lcp = e.startTime || e.renderTime || e.loadTime; });
+    watch('layout-shift', (e) => { if (!e.hadRecentInput) acc.cls += e.value; });
+    await new Promise((res) => setTimeout(res, 500));   // let buffered entries flush
+    observers.forEach((o) => o.disconnect());
+
+    const nav = performance.getEntriesByType('navigation')[0] || {};
+    const res = performance.getEntriesByType('resource') || [];
+    const bytes = res.reduce((s, x) => s + (x.transferSize || 0), 0);
+    const round = (v) => (v == null ? null : Math.round(v));
+    return {
+      url: location.href,
+      ttfb_ms: round(nav.responseStart),
+      domContentLoaded_ms: round(nav.domContentLoadedEventEnd),
+      load_ms: round(nav.loadEventEnd),
+      fcp_ms: round(acc.fcp),
+      lcp_ms: round(acc.lcp),
+      cls: Math.round(acc.cls * 1000) / 1000,
+      resources: { count: res.length, transferBytes: bytes },
+      visibility: document.visibilityState
+    };
+  };
+
+  const settleAfterLoad = async (targetTabId) => {
+    // Capped below the bridge's 30s command timeout so the result is never
+    // lost to a transport timeout while the extension is still polling.
+    const deadline = Date.now() + Math.min(params.timeout || 15000, 25000);
+    while (Date.now() < deadline) {
+      const tab = await chrome.tabs.get(targetTabId).catch(() => null);
+      if (!tab) throw new Error('Measured tab disappeared before metrics could be read (window closed?). Re-run, or escalate with focus:true.');
+      // tab.status, NOT an injected readyState probe: the initial about:blank
+      // document reports readyState=complete before the real URL even commits.
+      if (tab.status === 'complete' && !/^about:blank/i.test(tab.url || '')) break;
+      await new Promise((res) => setTimeout(res, 300));
+    }
+    await new Promise((res) => setTimeout(res, 1200)); // let LCP settle after load
+  };
+
+  if (params.activate && !params.focus) {
+    const tab = await chrome.tabs.get(tabId);
+    if (!/^https?:/i.test(tab.url || '')) throw new Error(`Cannot measure "${tab.url}": passive window supports http(s) pages only`);
+    let win = null;
+    try {
+      win = await chrome.windows.create({ url: tab.url, type: 'popup', focused: false, width: 1280, height: 800, left: 0, top: 0 });
+      const measuredTabId = win.tabs?.[0]?.id;
+      if (measuredTabId == null) throw new Error('Passive measurement window created without a tab');
+      await settleAfterLoad(measuredTabId);
+      const r = await chrome.scripting.executeScript({ target: { tabId: measuredTabId }, world: 'MAIN', func: collector });
+      const out = r?.[0]?.result || { error: 'performance read failed' };
+      out.measuredIn = 'passive-window';
+      out.note = out.error
+        ? 'Collector failed inside the measurement window — no metrics were read. Re-run, or escalate with focus:true.'
+        : out.visibility === 'hidden'
+          ? 'Passive window was fully occluded (visibility=hidden) — FCP/LCP may be missing. Free up some screen area, or escalate with focus:true (legacy foreground+reload, steals focus).'
+          : 'Fresh load measured in a temporary unfocused window — no focus steal, user’s active tab untouched. INP not captured passively.';
+      return out;
+    } finally {
+      if (win?.id != null) await chrome.windows.remove(win.id).catch(() => { /* window already gone */ });
+    }
+  }
+
   let activated = false;
-  if (params.activate) {
+  if (params.focus) {
     try {
       const tab = await chrome.tabs.get(tabId);
       await chrome.windows.update(tab.windowId, { focused: true });
       await chrome.tabs.update(tabId, { active: true });
       await chrome.tabs.reload(tabId);
-      const deadline = Date.now() + (params.timeout || 15000);
-      while (Date.now() < deadline) {
-        const r = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: () => document.readyState })
-          .catch(() => null);
-        if (r?.[0]?.result === 'complete') break;
-        await new Promise((res) => setTimeout(res, 300));
-      }
-      await new Promise((res) => setTimeout(res, 1200)); // let LCP settle after load
+      await settleAfterLoad(tabId);
       activated = true;
     } catch (_) { /* fall through to measure anyway */ }
   }
 
-  const r = await chrome.scripting.executeScript({
-    target: { tabId }, world: 'MAIN',
-    func: async () => {
-      // LCP / CLS / paint are observer-only entry types — getEntriesByType()
-      // does NOT return them. Use buffered PerformanceObserver to read past entries.
-      const acc = { fcp: null, lcp: null, cls: 0 };
-      const observers = [];
-      const watch = (type, cb) => {
-        try {
-          const o = new PerformanceObserver((list) => { for (const e of list.getEntries()) cb(e); });
-          o.observe({ type, buffered: true });
-          observers.push(o);
-        } catch (_) { /* type unsupported */ }
-      };
-      watch('paint', (e) => { if (e.name === 'first-contentful-paint') acc.fcp = e.startTime; });
-      watch('largest-contentful-paint', (e) => { acc.lcp = e.startTime || e.renderTime || e.loadTime; });
-      watch('layout-shift', (e) => { if (!e.hadRecentInput) acc.cls += e.value; });
-      await new Promise((res) => setTimeout(res, 500));   // let buffered entries flush
-      observers.forEach((o) => o.disconnect());
-
-      const nav = performance.getEntriesByType('navigation')[0] || {};
-      const res = performance.getEntriesByType('resource') || [];
-      const bytes = res.reduce((s, x) => s + (x.transferSize || 0), 0);
-      const round = (v) => (v == null ? null : Math.round(v));
-      return {
-        url: location.href,
-        ttfb_ms: round(nav.responseStart),
-        domContentLoaded_ms: round(nav.domContentLoadedEventEnd),
-        load_ms: round(nav.loadEventEnd),
-        fcp_ms: round(acc.fcp),
-        lcp_ms: round(acc.lcp),
-        cls: Math.round(acc.cls * 1000) / 1000,
-        resources: { count: res.length, transferBytes: bytes },
-        visibility: document.visibilityState
-      };
-    }
-  });
+  const r = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: collector });
   const out = r?.[0]?.result || { error: 'performance read failed' };
   out.activated = activated;
+  out.measuredIn = activated ? 'foregrounded-tab' : 'in-place';
   out.note = (out.fcp_ms == null && !activated)
-    ? 'FCP/LCP are null because the agent tab is backgrounded (paint timing needs a visible tab). Re-call with activate:true to foreground+reload and capture them. INP not captured passively.'
+    ? 'FCP/LCP are null because the agent tab is backgrounded (paint timing needs a visible tab). Re-call with activate:true to measure a fresh load in a temporary unfocused window (no focus steal). INP not captured passively.'
     : 'CWV from buffered PerformanceObserver (lab). INP is interaction-based and not captured passively.';
   return out;
 }
@@ -1190,7 +1280,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         connected: websocket && websocket.readyState === WebSocket.OPEN,
         profileId,
         alias: profileAlias,
-        version: '2.1.0',
+        version: '2.2.0',
         agentTabs: agentTabs.length,
         agentTabsList: agentTabs,
         groupId: tabGroupManager.groupId,
