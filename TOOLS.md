@@ -1,7 +1,7 @@
 # Browser Agent — MCP Tools Reference
 
 > ⚙️ **Auto-generated — do not edit by hand.** Regenerate with `npm run docs:tools` (from `mcp-server/`).
-> Source of truth: `mcp-server/src/tools.ts`. Package `@ws-workspace/browser-agent-mcp` v2.2.0 · **54 tools** in 20 categories.
+> Source of truth: `mcp-server/src/tools.ts`. Package `@ws-workspace/browser-agent-mcp` v2.3.0 · **54 tools** in 20 categories.
 
 ## Categories
 

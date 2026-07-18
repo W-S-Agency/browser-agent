@@ -297,6 +297,67 @@ app.post('/profiles/:profileId/alias', requireAuth, async (req, res) => {
   }
 });
 
+// Playbook runner (Safety v0 part 3 — "headless"/unattended leg): execute a
+// deterministic list of commands WITHOUT an LLM in the loop (Hermes cron, CI).
+// Every step is marked unattended:true server-side — the extension's policy
+// gate degrades "confirm" to deny (nobody to ask). Auth required.
+app.post('/run-playbook', requireAuth, async (req, res) => {
+  try {
+    const { playbook, profileId, stopOnError = true, timeout = 30000 } = req.body;
+    if (!Array.isArray(playbook) || playbook.length === 0) {
+      return res.status(400).json({ success: false, error: 'playbook must be a non-empty array of {type, params, timeout?}' });
+    }
+    if (playbook.length > 100) {
+      return res.status(400).json({ success: false, error: 'playbook too long (max 100 steps)' });
+    }
+
+    // Clamp per-step timeouts and cap the playbook's worst-case duration:
+    // clients (fetch) give up after ~5 min while the server would keep
+    // mutating the browser — reject up-front instead of diverging.
+    const stepTimeout = (s) => Math.min(Math.max(Number(s.timeout) || timeout, 1000), 600000);
+    const worstCaseMs = playbook.reduce((sum, s) => sum + stepTimeout(s || {}), 0);
+    if (worstCaseMs > 240000) {
+      return res.status(400).json({
+        success: false,
+        error: `playbook worst-case duration ${Math.round(worstCaseMs / 1000)}s exceeds 240s — split it or lower step timeouts`
+      });
+    }
+
+    const profile = profileId
+      ? profileManager.getProfile(profileId)
+      : profileManager.getActiveProfile();
+    if (!profile) {
+      return res.status(404).json({ success: false, error: 'No active profile found. Make sure Chrome Extension is running.' });
+    }
+
+    logger.info('[Bridge] Playbook start', { steps: playbook.length, profile: profile.id, stopOnError });
+    const results = [];
+    for (let i = 0; i < playbook.length; i++) {
+      const step = playbook[i] || {};
+      if (!step.type) {
+        results.push({ step: i, type: null, success: false, error: 'step has no "type"' });
+        if (stopOnError) break;
+        continue;
+      }
+      const command = { type: step.type, params: step.params || {}, unattended: true };
+      try {
+        const result = await profileManager.executeCommand(profile.id, command, stepTimeout(step));
+        results.push({ step: i, type: step.type, success: true, result });
+      } catch (error) {
+        results.push({ step: i, type: step.type, success: false, error: error.message });
+        if (stopOnError) break;
+      }
+    }
+
+    const ok = results.length === playbook.length && results.every((r) => r.success);
+    logger.info('[Bridge] Playbook finished', { executed: results.length, total: playbook.length, ok });
+    res.json({ success: ok, executed: results.length, total: playbook.length, results });
+  } catch (error) {
+    logger.error('[Bridge] Playbook failed:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Policy for the extension's enforcement layer (Safety v0 part 2).
 // Read-only; loopback + Host-guard apply. Re-read from disk on every request
 // so edits to policy.json go live without a bridge restart.
