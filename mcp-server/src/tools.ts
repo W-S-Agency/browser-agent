@@ -795,6 +795,32 @@ export function createTools(): Tool[] {
         required: ['token', 'humanApproval'],
       },
     },
+
+    // === Batch ===
+    {
+      name: 'browser_batch',
+      description: 'Run several browser tools in ONE call (one LLM round-trip) instead of many. Pass steps: [{tool, args}] — each runs in order through the normal per-tool path (same profile, same Safety-v0 policy gate). Returns per-step {success, result|error}. Use for deterministic sequences you already know (navigate → wait → extract, or a fill-then-submit flow) to save tokens/latency. Stops at the first failure unless stopOnError:false. If a step needs policy confirmation, the batch PAUSES at that step and returns pausedForConfirmation — ask the human, browser_confirm, then re-run the batch (completed steps with side effects will repeat, so keep batches idempotent or split them). No nesting (a step cannot be browser_batch).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          steps: {
+            type: 'array',
+            description: 'Ordered tool calls. Each: { tool: "browser_*", args: {…} }. Max 50.',
+            items: {
+              type: 'object',
+              properties: {
+                tool: { type: 'string', description: 'Tool name, e.g. "browser_navigate"' },
+                args: { type: 'object', description: 'Arguments for that tool (profileId inherited from the batch)' },
+              },
+              required: ['tool'],
+            },
+          },
+          stopOnError: { type: 'boolean', description: 'Stop at the first failing step (default true). false = run all, collect every result.' },
+          profileId: { type: 'string', description: 'Profile ID or alias applied to every step (a step’s own args.profileId wins if set)' },
+        },
+        required: ['steps'],
+      },
+    },
   ];
 }
 
@@ -807,6 +833,60 @@ export async function executeToolCall(
   bridgeClient: BridgeClient
 ): Promise<any> {
   const { profileId, ...params } = args;
+
+  // Batch: MCP-side composition — one LLM round-trip, N normal sub-calls.
+  // Each sub-call still hits the extension's Safety-v0 policy gate.
+  if (toolName === 'browser_batch') {
+    const steps = Array.isArray(params.steps) ? params.steps : [];
+    if (steps.length === 0) throw new Error('browser_batch: steps must be a non-empty array');
+    if (steps.length > 50) throw new Error('browser_batch: too many steps (max 50)');
+    const stopOnError = params.stopOnError !== false;
+
+    // A policy confirm can hide inside an aggregating tool's result (fill_form
+    // wraps form_input, extract_validated wraps execute_js), so scan shallowly
+    // rather than only the top level (review 🟡). Depth 3 covers those shapes.
+    const findConfirmation = (r: any, depth = 0): any => {
+      if (!r || typeof r !== 'object' || depth > 3) return null;
+      if (r.requiresConfirmation) return r;
+      if (Array.isArray(r)) { for (const x of r) { const h = findConfirmation(x, depth + 1); if (h) return h; } return null; }
+      for (const k of Object.keys(r)) { const h = findConfirmation(r[k], depth + 1); if (h) return h; }
+      return null;
+    };
+
+    const results: any[] = [];
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i] || {};
+      if (!step.tool || typeof step.tool !== 'string') {
+        results.push({ step: i, tool: step.tool ?? null, success: false, error: 'step has no "tool"' });
+        if (stopOnError) break; else continue;
+      }
+      if (step.tool === 'browser_batch') {
+        results.push({ step: i, tool: step.tool, success: false, error: 'browser_batch cannot be nested' });
+        if (stopOnError) break; else continue;
+      }
+      // step's own profileId wins, else inherit the batch profileId
+      const stepArgs = { profileId, ...(step.args || {}) };
+      try {
+        const result = await executeToolCall(step.tool, stepArgs, bridgeClient);
+        // A policy-gated confirm surfaces here — cannot proceed within a batch.
+        const confirm = findConfirmation(result);
+        if (confirm) {
+          results.push({ step: i, tool: step.tool, success: false, pausedForConfirmation: confirm });
+          return { batched: true, executed: results.length, total: steps.length, paused: true, results };
+        }
+        // success = the call didn't throw AND didn't report a top-level error
+        // (execute_js / extract report runtime errors as {error} instead of throwing)
+        const failed = result && typeof result === 'object' && result.error;
+        results.push({ step: i, tool: step.tool, success: !failed, ...(failed ? { error: result.error } : {}), result });
+        if (failed && stopOnError) break;
+      } catch (error: any) {
+        results.push({ step: i, tool: step.tool, success: false, error: error?.message || String(error) });
+        if (stopOnError) break;
+      }
+    }
+    const ok = results.length === steps.length && results.every((r) => r.success);
+    return { batched: true, executed: results.length, total: steps.length, success: ok, results };
+  }
 
   switch (toolName) {
     // Navigation
