@@ -45,3 +45,6 @@ CLAUDE.md
 ROADMAP.md
 HANDOFF.md
 HANDOFF-MT-2p-integration.md
+
+# User-editable policy config (auto-created from built-in default on first run)
+bridge/policy.json

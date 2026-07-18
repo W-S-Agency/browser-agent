@@ -1,7 +1,7 @@
 # Browser Agent — MCP Tools Reference
 
 > ⚙️ **Auto-generated — do not edit by hand.** Regenerate with `npm run docs:tools` (from `mcp-server/`).
-> Source of truth: `mcp-server/src/tools.ts`. Package `@ws-workspace/browser-agent-mcp` v2.2.0 · **53 tools** in 19 categories.
+> Source of truth: `mcp-server/src/tools.ts`. Package `@ws-workspace/browser-agent-mcp` v2.2.0 · **54 tools** in 20 categories.
 
 ## Categories
 
@@ -24,6 +24,7 @@
 - [Self-healing action + Performance (Sprint 3)](#self-healing-action-performance-sprint-3) — 4
 - [Cleanup](#cleanup) — 1
 - [Sprint 6: small parity (fill_form, extract_validated, handle_dialog)](#sprint-6-small-parity-fill-form-extract-validated-handle-dialog) — 3
+- [Safety (v0)](#safety-v0) — 1
 
 ## Navigation
 
@@ -605,3 +606,15 @@ Arm automatic handling of the NEXT native JS dialog (alert / confirm / prompt) o
 | `promptText` | string | no | Text to enter into a prompt() dialog (optional). |
 | `tabId` | number | no | Agent tab ID (optional) |
 | `profileId` | string | no | Profile ID or alias (optional) |
+
+## Safety (v0)
+
+### `browser_confirm`
+
+Approve ONE policy-gated action. When a tool returns requiresConfirmation, you MUST first ask the human EXPLICITLY in chat to approve that exact action (show command + site + detail). Only after they approve, call this with the confirmToken and their verbatim approval (audit-logged in the browser). The grant is one-shot, bound to command+origin+EXACT parameters, valid 2 minutes — then re-run the original tool UNCHANGED. NEVER call this without a real human approval in the conversation. v0 limits (documented): policy judges the moment of the call, not in-page follow-up effects; this layer guards an honest agent — hard human-in-the-loop UI comes later.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `token` | string | yes | confirmToken from the requiresConfirmation response |
+| `humanApproval` | string | yes | Verbatim quote of the human’s approval from chat (audit trail, logged in the extension action log) |
+| `profileId` | string | no | Profile ID or alias (optional — must match the profile that issued the token) |
