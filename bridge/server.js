@@ -24,13 +24,62 @@ const profileManager = new ProfileManager();
 app.use(cors({ origin: 'http://localhost' }));
 app.use(express.json());
 
-// WebSocket Server
-const wss = new WebSocketServer({ port: PORT });
+// DNS-rebinding guard: loopback bind + token do NOT stop a malicious web page
+// whose domain re-resolves to 127.0.0.1 — its requests are same-origin (it can
+// read /auth/token, then POST /execute). A loopback Host allowlist closes this.
+const LOOPBACK_HOSTS = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+app.use((req, res, next) => {
+  if (!LOOPBACK_HOSTS.test(req.headers.host || '')) {
+    logger.warn('[Bridge] Rejected non-loopback Host header (DNS rebinding guard)', {
+      host: req.headers.host, path: req.path
+    });
+    return res.status(403).json({ success: false, error: 'Forbidden: bad Host header' });
+  }
+  next();
+});
 
-logger.info(`[Bridge] WebSocket Server listening on ws://localhost:${PORT}`);
+// Auth for mutating HTTP endpoints (Safety v0 transport hardening).
+// GET endpoints stay open: the server binds to 127.0.0.1 only, and the
+// extension bootstraps by fetching /auth/token without a token.
+function requireAuth(req, res, next) {
+  const token = req.headers['x-auth-token'];
+  if (!validateToken(token)) {
+    logger.warn('[Bridge] Unauthorized HTTP request', {
+      path: req.path,
+      ip: req.socket.remoteAddress,
+      token: token ? 'invalid' : 'missing'
+    });
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: missing or invalid X-Auth-Token header. Fetch the token from GET /auth/token (localhost only).'
+    });
+  }
+  next();
+}
+
+// WebSocket Server — loopback only: real logged-in browser sessions must not
+// be reachable from the LAN. Bind BOTH loopbacks: "localhost" resolves to
+// ::1 on modern Node clients and to 127.0.0.1 in Chrome — IPv4-only binding
+// breaks the former (verified live 18.07: ECONNREFUSED ::1).
+// NOTE: listen/bind errors are emitted ASYNC as an 'error' event — a try/catch
+// around the constructor catches nothing and an unhandled 'error' crashes the
+// process. Handle the event (mirrors the http6 pattern below).
+const wss = new WebSocketServer({ port: PORT, host: '127.0.0.1' });
+wss.on('error', (e) => logger.error('[Bridge] WS server error (IPv4 loopback)', { error: e.message }));
+wss.on('listening', () => logger.info(`[Bridge] WebSocket Server listening on ws://127.0.0.1:${PORT}`));
+const wss6 = new WebSocketServer({ port: PORT, host: '::1' });
+wss6.on('error', (e) => logger.warn('[Bridge] IPv6 loopback WS bind unavailable, IPv4 only', { error: e.message }));
+wss6.on('listening', () => logger.info(`[Bridge] WebSocket Server also listening on ws://[::1]:${PORT}`));
 
 // Handle WebSocket connections from Chrome Extensions
-wss.on('connection', (ws, req) => {
+const handleWsConnection = (ws, req) => {
+  // DNS-rebinding guard (same rationale as the HTTP middleware above)
+  if (!LOOPBACK_HOSTS.test(req.headers.host || '')) {
+    logger.warn('[Bridge] Rejected WS with non-loopback Host header (DNS rebinding guard)', { host: req.headers.host });
+    ws.close(1008, 'Forbidden: bad Host header');
+    return;
+  }
+
   // Parse URL to extract token
   const url = new URL(req.url, `ws://localhost:${PORT}`);
   const token = url.searchParams.get('token');
@@ -122,10 +171,12 @@ wss.on('connection', (ws, req) => {
   ws.on('error', (error) => {
     logger.error('[Bridge] WebSocket error:', error);
   });
-});
+};
+wss.on('connection', handleWsConnection);
+wss6.on('connection', handleWsConnection);
 
 // HTTP API for MCP Server
-app.post('/execute', async (req, res) => {
+app.post('/execute', requireAuth, async (req, res) => {
   try {
     const { command, profileId, timeout = 30000 } = req.body;
 
@@ -196,7 +247,7 @@ app.get('/profiles', (req, res) => {
 });
 
 // Set profile alias
-app.post('/profiles/:profileId/alias', async (req, res) => {
+app.post('/profiles/:profileId/alias', requireAuth, async (req, res) => {
   try {
     const { profileId } = req.params;
     const { alias } = req.body;
@@ -256,15 +307,22 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Start HTTP server
-app.listen(HTTP_PORT, () => {
-  logger.info(`[Bridge] HTTP API listening on http://localhost:${HTTP_PORT}`);
+// Start HTTP server — loopback only, both stacks (see WebSocket note above)
+app.listen(HTTP_PORT, '127.0.0.1', () => {
+  logger.info(`[Bridge] HTTP API listening on http://127.0.0.1:${HTTP_PORT}`);
   logger.info('[Bridge] Ready to accept connections');
+});
+const http6 = app.listen(HTTP_PORT, '::1', () => {
+  logger.info(`[Bridge] HTTP API also listening on http://[::1]:${HTTP_PORT}`);
+});
+http6.on('error', (e) => {
+  logger.warn('[Bridge] IPv6 loopback HTTP bind unavailable, IPv4 only', { error: e.message });
 });
 
 // Handle shutdown
 process.on('SIGINT', () => {
   logger.info('\n[Bridge] Shutting down...');
   wss.close();
+  wss6.close();
   process.exit(0);
 });
