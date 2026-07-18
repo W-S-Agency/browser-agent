@@ -155,7 +155,7 @@ function hostFromUrl(raw) {
 // lead off-site, cross-origin iframes via frameSelector) are out of scope;
 // the confirm flow guards an honest agent, not a malicious one (hard
 // human-in-the-loop UI = part 3).
-async function policyGate(type, params) {
+async function policyGate(type, params, unattended = false) {
   if (!POLICY_GATED.has(type)) return null;
 
   // Hosts to judge: navigation-like commands by their DESTINATION,
@@ -200,6 +200,18 @@ async function policyGate(type, params) {
   if (verdict.action === 'deny') {
     logAction(type, 'error', `⛔ policy deny @ ${host}${verdict.note ? ' — ' + verdict.note : ''}`);
     throw new Error(`Blocked by policy: "${type}" on ${host}${verdict.note ? ` (${verdict.note})` : ''}. Edit bridge/policy.json to change this.`);
+  }
+
+  if (verdict.action === 'confirm' && unattended) {
+    // No human in the loop (playbook-runner / cron): "confirm" degrades to
+    // deny unless policy.unattended.confirmBecomes is EXPLICITLY "allow".
+    const downgrade = String(policy?.unattended?.confirmBecomes || 'deny').toLowerCase();
+    if (downgrade !== 'allow') {
+      logAction(type, 'error', `⛔ unattended confirm→deny @ ${host}`);
+      throw new Error(`Blocked by policy (unattended mode): "${type}" on ${host} requires human confirmation${verdict.note ? ` (${verdict.note})` : ''} and no human is in the loop. Run it attended, or change the rule in bridge/policy.json.`);
+    }
+    logAction(type, 'running', `⚠️ unattended confirm→allow (policy.unattended.confirmBecomes=allow) @ ${host}`);
+    return null;
   }
 
   if (verdict.action === 'confirm') {
@@ -448,11 +460,13 @@ function formatCommandDetail(command) {
 // === Command Execution (v2: Tab Group Isolated) ===
 
 async function executeCommand(command) {
-  const { type, params = {} } = command;
+  const { type, params = {}, unattended } = command;
 
   // Safety v0 policy gate: deny throws, confirm returns a requiresConfirmation
-  // result the agent must escalate to the human (browser_confirm), allow falls through.
-  const gated = await policyGate(type, params);
+  // result the agent must escalate to the human (browser_confirm), allow falls
+  // through. unattended (set server-side by the bridge playbook-runner):
+  // confirm degrades to deny — there is nobody to ask.
+  const gated = await policyGate(type, params, unattended === true);
   if (gated) return gated;
 
   switch (type) {
