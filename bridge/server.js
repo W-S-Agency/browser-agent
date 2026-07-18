@@ -7,6 +7,7 @@ import cors from 'cors';
 import { ProfileManager } from './profile-manager.js';
 import logger from './logger.js';
 import { getAuthToken, validateToken, getAuthTokenPath } from './auth.js';
+import { loadPolicy, getPolicyPath } from './policy.js';
 import { URL } from 'url';
 
 const PORT = 18792;
@@ -294,6 +295,13 @@ app.post('/profiles/:profileId/alias', requireAuth, async (req, res) => {
       error: error.message
     });
   }
+});
+
+// Policy for the extension's enforcement layer (Safety v0 part 2).
+// Read-only; loopback + Host-guard apply. Re-read from disk on every request
+// so edits to policy.json go live without a bridge restart.
+app.get('/policy', (req, res) => {
+  res.json({ success: true, policy: loadPolicy(), file: getPolicyPath() });
 });
 
 app.get('/health', (req, res) => {

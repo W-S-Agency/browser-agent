@@ -54,6 +54,180 @@ if (chrome.webRequest) {
 }
 
 
+// === Policy enforcement (Safety v0, part 2) ===
+// The bridge serves policy.json (GET /policy); THIS is the enforcement point —
+// only the extension knows the target tab's URL. Deterministic gate in
+// executeCommand: allow | deny | confirm (one-shot human-approved grants).
+const POLICY_REFRESH_MS = 5 * 60 * 1000;
+const CONFIRM_TTL_MS = 2 * 60 * 1000;
+// Commands that WRITE/ACT on a page (read-only tools are not gated).
+// NOTE: these are the EXTENSION command types, not MCP tool names — CDP input
+// is mouse_click/keyboard_type/etc., and browser_fill_form decomposes into
+// form_input on the MCP side (review R1). new_tab is navigation (review R2).
+const POLICY_GATED = new Set([
+  'navigate', 'new_tab', 'click', 'click_ref', 'type', 'form_input',
+  'execute_js', 'act',
+  'mouse_click', 'mouse_drag', 'keyboard_type', 'keyboard_key',
+  'set_cookies', 'upload_file', 'download', 'handle_dialog'
+]);
+let policyCache = null;
+let policyFetchedAt = 0;
+const pendingConfirmations = new Map(); // token -> { type, host, expiresAt }
+const approvedGrants = new Map();       // `${type}|${host}` -> { expiresAt }
+
+async function fetchPolicy(force = false) {
+  // lazy sweep of expired confirmation state (review: avoid slow Map growth)
+  const now = Date.now();
+  for (const [k, v] of pendingConfirmations) if (v.expiresAt < now) pendingConfirmations.delete(k);
+  for (const [k, v] of approvedGrants) if (v.expiresAt < now) approvedGrants.delete(k);
+
+  if (!force && policyCache && Date.now() - policyFetchedAt < POLICY_REFRESH_MS) return policyCache;
+  try {
+    const r = await fetch('http://localhost:18793/policy');
+    const data = await r.json();
+    if (data?.success && data.policy) {
+      policyCache = data.policy;
+      policyFetchedAt = Date.now();
+    }
+  } catch (_) { /* bridge briefly down — keep last known policy */ }
+  return policyCache;
+}
+
+function originMatches(pattern, host) {
+  if (!pattern || !host) return false;
+  const p = String(pattern).toLowerCase().replace(/\.$/, '');
+  const h = String(host).toLowerCase().replace(/\.$/, ''); // trailing FQDN dot (review R3)
+  if (p === '*') return true;
+  if (p.startsWith('*.')) {
+    const base = p.slice(2);
+    return h === base || h.endsWith('.' + base);
+  }
+  return h === p;
+}
+
+// Unknown/typo'd action values fail to CONFIRM, not to allow (review Y1) —
+// the file is edited by hand, and a typo must not silently open a site.
+function normalizeAction(a) {
+  if (a == null || a === '') return null;
+  const v = String(a).toLowerCase();
+  return (v === 'allow' || v === 'confirm' || v === 'deny') ? v : 'confirm';
+}
+
+function evaluatePolicy(policy, type, host) {
+  for (const rule of policy.rules || []) {
+    const cmdMatch = rule.commands === '*' || (Array.isArray(rule.commands) && rule.commands.includes(type));
+    if (cmdMatch && originMatches(rule.origin, host)) {
+      return { action: normalizeAction(rule.action) || 'confirm', note: rule.note, origin: rule.origin };
+    }
+  }
+  const cmdDefault = normalizeAction(policy.commandDefaults?.[type]);
+  if (cmdDefault) return { action: cmdDefault, note: `commandDefaults.${type}` };
+  return { action: normalizeAction(policy.defaults?.action) || 'allow' };
+}
+
+// Bind a grant to the EXACT call (review Y5): same command+host with different
+// params (other JS code, other file) needs its own confirmation.
+function paramsDigest(type, params) {
+  const entries = Object.entries(params || {})
+    .filter(([k]) => k !== 'tabId' && k !== 'profileId')
+    .sort(([a], [b]) => a.localeCompare(b));
+  const s = type + '|' + JSON.stringify(entries);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(16);
+}
+
+// Extract a judgeable http(s) hostname from a raw URL string (review R3:
+// trim + real URL parse + trailing-dot strip — no regex-on-raw-string).
+function hostFromUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  let u;
+  try { u = new URL(s); } catch (_) { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  return u.hostname.toLowerCase().replace(/\.$/, '');
+}
+
+// Returns null (proceed) or a requiresConfirmation result; throws on deny.
+//
+// KNOWN v0 CEILINGS (documented on purpose, review Y4-Y6/G): the gate judges
+// the moment of the call — in-page effects (JS fetch/redirects, clicks that
+// lead off-site, cross-origin iframes via frameSelector) are out of scope;
+// the confirm flow guards an honest agent, not a malicious one (hard
+// human-in-the-loop UI = part 3).
+async function policyGate(type, params) {
+  if (!POLICY_GATED.has(type)) return null;
+
+  // Hosts to judge: navigation-like commands by their DESTINATION,
+  // set_cookies by the cookie domains it writes (review Y2, worst-of),
+  // everything else by the current tab's URL.
+  let hosts = [];
+  if (type === 'navigate' || type === 'download' || type === 'new_tab') {
+    const h = hostFromUrl(params.url);
+    if (!h) return null; // no/non-web destination (new_tab without url = blank)
+    hosts = [h];
+  } else if (type === 'set_cookies') {
+    hosts = (params.cookies || [])
+      .map((c) => String(c.domain || '').trim().toLowerCase().replace(/^\./, '').replace(/\.$/, ''))
+      .filter(Boolean);
+  }
+  if (!hosts.length) {
+    try {
+      const tabId = await resolveAgentTabId(params.tabId);
+      const h = hostFromUrl((await chrome.tabs.get(tabId))?.url);
+      if (!h) return null; // non-web page out of scope v0
+      hosts = [h];
+    } catch (_) {
+      return null; // no agent tab — let the handler produce its normal error
+    }
+  }
+
+  const policy = await fetchPolicy();
+  const rank = { allow: 0, confirm: 1, deny: 2 };
+  let verdict = { action: 'allow' };
+  if (!policy) {
+    // fail-to-confirm, not fail-open (review Y3): no reachable policy at all
+    verdict = { action: 'confirm', note: 'policy unavailable (bridge /policy unreachable)' };
+  } else {
+    for (const h of hosts) {
+      const v = evaluatePolicy(policy, type, h);
+      if (rank[v.action] > rank[verdict.action]) verdict = { ...v, host: h };
+    }
+  }
+  const host = verdict.host || hosts.join(',');
+  const detail = formatCommandDetail({ type, params });
+
+  if (verdict.action === 'deny') {
+    logAction(type, 'error', `⛔ policy deny @ ${host}${verdict.note ? ' — ' + verdict.note : ''}`);
+    throw new Error(`Blocked by policy: "${type}" on ${host}${verdict.note ? ` (${verdict.note})` : ''}. Edit bridge/policy.json to change this.`);
+  }
+
+  if (verdict.action === 'confirm') {
+    const digest = paramsDigest(type, params);
+    const grantKey = `${type}|${host}|${digest}`;
+    const grant = approvedGrants.get(grantKey);
+    if (grant && grant.expiresAt > Date.now()) {
+      approvedGrants.delete(grantKey); // one-shot
+      logAction(type, 'running', `✅ policy grant consumed @ ${host}`);
+      return null;
+    }
+    const token = crypto.randomUUID();
+    pendingConfirmations.set(token, { type, host, digest, expiresAt: Date.now() + CONFIRM_TTL_MS });
+    logAction(type, 'error', `🔐 policy confirm required @ ${host} — ${detail}`);
+    return {
+      requiresConfirmation: true,
+      command: type,
+      origin: host,
+      detail,
+      reason: verdict.note || 'Policy requires human confirmation for this action on this site.',
+      confirmToken: token,
+      howToConfirm: 'Ask the human EXPLICITLY in chat to approve this exact action (show them command, site and detail). After approval, call browser_confirm {token, humanApproval:"<their words verbatim>"}, then re-run this command UNCHANGED within 2 minutes (the grant is bound to these exact parameters).'
+    };
+  }
+
+  return null;
+}
+
 // Keep Service Worker alive
 let keepAliveInterval = null;
 
@@ -120,6 +294,7 @@ async function init() {
   }
 
   await fetchAuthToken();
+  fetchPolicy(true); // prime the policy cache (non-blocking is fine)
   startKeepAlive();
   connectToBridge();
 }
@@ -275,7 +450,25 @@ function formatCommandDetail(command) {
 async function executeCommand(command) {
   const { type, params = {} } = command;
 
+  // Safety v0 policy gate: deny throws, confirm returns a requiresConfirmation
+  // result the agent must escalate to the human (browser_confirm), allow falls through.
+  const gated = await policyGate(type, params);
+  if (gated) return gated;
+
   switch (type) {
+    // --- Policy confirmation (Safety v0) ---
+    case 'confirm_action': {
+      const pc = pendingConfirmations.get(params.token);
+      if (!pc || pc.expiresAt < Date.now()) {
+        pendingConfirmations.delete(params.token);
+        throw new Error('Confirmation token unknown or expired (TTL 2 min). Re-run the original command to get a fresh one.');
+      }
+      pendingConfirmations.delete(params.token);
+      approvedGrants.set(`${pc.type}|${pc.host}|${pc.digest}`, { expiresAt: Date.now() + CONFIRM_TTL_MS });
+      logAction('confirm_action', 'success', `${pc.type} @ ${pc.host} — human: "${(params.humanApproval || '').substring(0, 80)}"`);
+      return { approved: true, command: pc.type, origin: pc.host, validForMs: CONFIRM_TTL_MS, note: 'One-shot grant bound to the exact original parameters. Re-run the original command UNCHANGED now.' };
+    }
+
     // --- Navigation ---
     case 'navigate':
       return await navigateAgent(params.url, params.tabId);

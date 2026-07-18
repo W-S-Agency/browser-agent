@@ -780,6 +780,21 @@ export function createTools(): Tool[] {
         },
       },
     },
+
+    // === Safety (v0) ===
+    {
+      name: 'browser_confirm',
+      description: 'Approve ONE policy-gated action. When a tool returns requiresConfirmation, you MUST first ask the human EXPLICITLY in chat to approve that exact action (show command + site + detail). Only after they approve, call this with the confirmToken and their verbatim approval (audit-logged in the browser). The grant is one-shot, bound to command+origin+EXACT parameters, valid 2 minutes — then re-run the original tool UNCHANGED. NEVER call this without a real human approval in the conversation. v0 limits (documented): policy judges the moment of the call, not in-page follow-up effects; this layer guards an honest agent — hard human-in-the-loop UI comes later.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          token: { type: 'string', description: 'confirmToken from the requiresConfirmation response' },
+          humanApproval: { type: 'string', description: 'Verbatim quote of the human’s approval from chat (audit trail, logged in the extension action log)' },
+          profileId: { type: 'string', description: 'Profile ID or alias (optional — must match the profile that issued the token)' },
+        },
+        required: ['token', 'humanApproval'],
+      },
+    },
   ];
 }
 
@@ -1200,6 +1215,13 @@ export async function executeToolCall(
     case 'browser_handle_dialog':
       return await bridgeClient.executeCommand(
         { type: 'handle_dialog', params: { accept: params.accept !== false, promptText: params.promptText, tabId: params.tabId } },
+        profileId
+      );
+
+    // === Safety (v0) ===
+    case 'browser_confirm':
+      return await bridgeClient.executeCommand(
+        { type: 'confirm_action', params: { token: params.token, humanApproval: params.humanApproval } },
         profileId
       );
 
