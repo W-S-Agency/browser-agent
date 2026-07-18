@@ -530,12 +530,13 @@ Self-healing action by natural-language description. Caches a CSS selector per (
 
 ### `browser_performance`
 
-Read performance metrics for the current page: Core Web Vitals (LCP, CLS, FCP) + navigation timing (TTFB, DOMContentLoaded, load) + resource count/bytes. Lab data from the real logged-in Chrome session — no PageSpeed API quota. NOTE: FCP/LCP require a VISIBLE tab; agent tabs are backgrounded, so pass activate:true to foreground+reload the tab and capture them (this briefly takes focus).
+Read performance metrics for the current page: Core Web Vitals (LCP, CLS, FCP) + navigation timing (TTFB, DOMContentLoaded, load) + resource count/bytes. Lab data from the real logged-in Chrome session — no PageSpeed API quota. NOTE: FCP/LCP require a VISIBLE tab; agent tabs are backgrounded, so pass activate:true to measure a fresh load in a temporary UNFOCUSED window (paint is captured without stealing focus or switching the user’s active tab). If that window is fully occluded the result says so; focus:true is the legacy foreground+reload escalation.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
-| `activate` | boolean | no | Foreground the tab and reload to capture FCP/LCP (paint timing needs a visible tab). Briefly steals focus. Default false. |
-| `timeout` | number | no | Max wait for reload when activate=true (ms, default 15000) |
+| `activate` | boolean | no | Measure a fresh GET load of the tab’s current URL in a temporary unfocused window to capture FCP/LCP (paint timing needs a visible tab). Does NOT steal focus or switch the user’s active tab. Note: state-dependent pages (POST results, one-time tokens) may render differently on a fresh GET. Default false. |
+| `focus` | boolean | no | Legacy escalation: foreground THIS tab + reload (steals focus and switches the active tab). Use only if activate:true reported the passive window as occluded. If both are set, focus wins. Default false. |
+| `timeout` | number | no | Max wait for the measured load when activate/focus is true (ms, default 15000, capped at 25000 to stay under the bridge command timeout) |
 | `tabId` | number | no | Agent tab ID (optional) |
 | `profileId` | string | no | Profile ID or alias (optional) |
 
