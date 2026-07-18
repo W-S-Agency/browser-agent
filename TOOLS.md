@@ -1,7 +1,7 @@
 # Browser Agent — MCP Tools Reference
 
 > ⚙️ **Auto-generated — do not edit by hand.** Regenerate with `npm run docs:tools` (from `mcp-server/`).
-> Source of truth: `mcp-server/src/tools.ts`. Package `@ws-workspace/browser-agent-mcp` v2.3.0 · **54 tools** in 20 categories.
+> Source of truth: `mcp-server/src/tools.ts`. Package `@ws-workspace/browser-agent-mcp` v2.4.0 · **55 tools** in 21 categories.
 
 ## Categories
 
@@ -25,6 +25,7 @@
 - [Cleanup](#cleanup) — 1
 - [Sprint 6: small parity (fill_form, extract_validated, handle_dialog)](#sprint-6-small-parity-fill-form-extract-validated-handle-dialog) — 3
 - [Safety (v0)](#safety-v0) — 1
+- [Batch](#batch) — 1
 
 ## Navigation
 
@@ -618,3 +619,15 @@ Approve ONE policy-gated action. When a tool returns requiresConfirmation, you M
 | `token` | string | yes | confirmToken from the requiresConfirmation response |
 | `humanApproval` | string | yes | Verbatim quote of the human’s approval from chat (audit trail, logged in the extension action log) |
 | `profileId` | string | no | Profile ID or alias (optional — must match the profile that issued the token) |
+
+## Batch
+
+### `browser_batch`
+
+Run several browser tools in ONE call (one LLM round-trip) instead of many. Pass steps: [{tool, args}] — each runs in order through the normal per-tool path (same profile, same Safety-v0 policy gate). Returns per-step {success, result\|error}. Use for deterministic sequences you already know (navigate → wait → extract, or a fill-then-submit flow) to save tokens/latency. Stops at the first failure unless stopOnError:false. If a step needs policy confirmation, the batch PAUSES at that step and returns pausedForConfirmation — ask the human, browser_confirm, then re-run the batch (completed steps with side effects will repeat, so keep batches idempotent or split them). No nesting (a step cannot be browser_batch).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `steps` | array | yes | Ordered tool calls. Each: { tool: "browser_*", args: {…} }. Max 50. |
+| `stopOnError` | boolean | no | Stop at the first failing step (default true). false = run all, collect every result. |
+| `profileId` | string | no | Profile ID or alias applied to every step (a step’s own args.profileId wins if set) |
