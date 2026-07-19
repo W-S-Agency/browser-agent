@@ -204,10 +204,13 @@ class CDPScreenshot {
   }
 
   /**
-   * Cleanup all attached targets
+   * Cleanup attached targets. Pass a Set of tabIds to detach only those
+   * (session-scoped cleanup must not detach another session's in-flight
+   * capture — review 🟡2); omit to detach everything.
    */
-  async cleanup() {
-    for (const tabId of this.attachedTargets) {
+  async cleanup(onlyTabIds) {
+    for (const tabId of [...this.attachedTargets]) {
+      if (onlyTabIds && !onlyTabIds.has(tabId)) continue;
       await this.detach(tabId);
     }
   }

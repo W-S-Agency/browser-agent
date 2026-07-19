@@ -28,6 +28,12 @@ const MAX_LOG_ENTRIES = 50;
 let actionLog = [];
 
 // === Plan Tracking (for Side Panel) ===
+// KNOWN v2.5 CEILING (review 🟡3, deliberate): plan tracking, action log and
+// the recorder are PROFILE-GLOBAL, not session-scoped. With parallel sessions
+// on one profile: set_plan from one session replaces the other's side-panel
+// plan, and an active recording captures BOTH sessions' actions. Tab scoping
+// (groups/tabs) IS session-isolated; these UX/recording surfaces are the
+// documented remainder — session-scoping them is a backlog item.
 let currentPlan = null; // { name, steps: [{text, status}], currentStep }
 
 // === Network capture (webRequest ring-buffer, per tab) ===
@@ -216,7 +222,11 @@ async function policyGate(type, params, unattended = false, mgr) {
 
   if (verdict.action === 'confirm') {
     const digest = paramsDigest(type, params);
-    const grantKey = `${type}|${host}|${digest}`;
+    // Session-keyed grant (review 🟡1): without the session component, two
+    // sessions running the IDENTICAL command could steal each other's one-shot
+    // approval — the wrong session executes on a human approval given in the
+    // other session's chat, and the approved session loops asking again.
+    const grantKey = `${mgr.sessionKey}|${type}|${host}|${digest}`;
     const grant = approvedGrants.get(grantKey);
     if (grant && grant.expiresAt > Date.now()) {
       approvedGrants.delete(grantKey); // one-shot
@@ -224,7 +234,7 @@ async function policyGate(type, params, unattended = false, mgr) {
       return null;
     }
     const token = crypto.randomUUID();
-    pendingConfirmations.set(token, { type, host, digest, expiresAt: Date.now() + CONFIRM_TTL_MS });
+    pendingConfirmations.set(token, { type, host, digest, sessionKey: mgr.sessionKey, expiresAt: Date.now() + CONFIRM_TTL_MS });
     logAction(type, 'error', `🔐 policy confirm required @ ${host} — ${detail}`);
     return {
       requiresConfirmation: true,
@@ -484,7 +494,8 @@ async function executeCommand(command) {
         throw new Error('Confirmation token unknown or expired (TTL 2 min). Re-run the original command to get a fresh one.');
       }
       pendingConfirmations.delete(params.token);
-      approvedGrants.set(`${pc.type}|${pc.host}|${pc.digest}`, { expiresAt: Date.now() + CONFIRM_TTL_MS });
+      // Grant bound to the session that ISSUED the token (review 🟡1)
+      approvedGrants.set(`${pc.sessionKey}|${pc.type}|${pc.host}|${pc.digest}`, { expiresAt: Date.now() + CONFIRM_TTL_MS });
       logAction('confirm_action', 'success', `${pc.type} @ ${pc.host} — human: "${(params.humanApproval || '').substring(0, 80)}"`);
       return { approved: true, command: pc.type, origin: pc.host, validForMs: CONFIRM_TTL_MS, note: 'One-shot grant bound to the exact original parameters. Re-run the original command UNCHANGED now.' };
     }
@@ -784,11 +795,16 @@ async function executeCommand(command) {
       return await handleDialog(await resolveAgentTabId(params.tabId, mgr), params.accept !== false, params.promptText);
 
     // --- Cleanup (this session only; v1 has no auto-reaper) ---
-    case 'cleanup':
+    case 'cleanup': {
+      // Snapshot own tabs BEFORE mgr.cleanup() clears the set — the CDP
+      // detach below must be scoped to THIS session's tabs only (review 🟡2:
+      // a global detach would kill another session's in-flight capture).
+      const ownTabs = new Set(mgr.agentTabIds);
       await mgr.cleanup();
       sessionManagers.delete(mgr.sessionKey);
-      await cdpScreenshot.cleanup();
+      await cdpScreenshot.cleanup(ownTabs);
       return { cleaned: true, session: mgr.sessionKey };
+    }
 
     default:
       throw new Error(`Unknown command type: ${type}`);
@@ -851,6 +867,11 @@ async function handleDialog(tabId, accept, promptText) {
  * If not provided, get active agent tab or create one.
  */
 async function resolveAgentTabId(tabId, mgr) {
+  // SW-restart recovery (review 🟢7): in-memory state is wiped on Service
+  // Worker restart but the session's group survives in the window — re-adopt
+  // it (exact-title match) before resolving. No-op when tabs are known.
+  if (mgr.agentTabIds.size === 0) await mgr.ensureGroup().catch(() => { /* none to adopt */ });
+
   if (tabId) {
     const tab = await mgr.getAgentTab(tabId);
     return tab.id;

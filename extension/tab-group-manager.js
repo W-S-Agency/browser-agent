@@ -21,7 +21,11 @@ class TabGroupManager {
     this.title = sessionKey === 'default'
       ? AGENT_GROUP_TITLE
       : `${AGENT_GROUP_TITLE} · ${sessionKey.slice(0, 6)}`;
-    this.color = GROUP_COLORS[TabGroupManager.hashKey(sessionKey) % GROUP_COLORS.length];
+    // Default pinned to pre-2.5 'blue' explicitly (review 🟢4: do not rely on
+    // the hash landing on blue — palette reorder would silently change legacy)
+    this.color = sessionKey === 'default'
+      ? 'blue'
+      : GROUP_COLORS[TabGroupManager.hashKey(sessionKey) % GROUP_COLORS.length];
     this.groupId = null;
     this.agentTabIds = new Set();
   }
