@@ -1,6 +1,6 @@
 {
   "name": "@ws-workspace/browser-agent-mcp",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "MCP Server for Browser Agent - provides tools for WS Workspace",
   "type": "module",
   "bin": {

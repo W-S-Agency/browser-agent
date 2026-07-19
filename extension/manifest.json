@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Agent for WS Workspace",
-  "version": "2.3.0",
+  "version": "2.5.0",
   "description": "Browser automation agent with tab isolation, CDP screenshots, and logged-in session access",
 
   "permissions": [

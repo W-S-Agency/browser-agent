@@ -28,6 +28,12 @@ const MAX_LOG_ENTRIES = 50;
 let actionLog = [];
 
 // === Plan Tracking (for Side Panel) ===
+// KNOWN v2.5 CEILING (review 🟡3, deliberate): plan tracking, action log and
+// the recorder are PROFILE-GLOBAL, not session-scoped. With parallel sessions
+// on one profile: set_plan from one session replaces the other's side-panel
+// plan, and an active recording captures BOTH sessions' actions. Tab scoping
+// (groups/tabs) IS session-isolated; these UX/recording surfaces are the
+// documented remainder — session-scoping them is a backlog item.
 let currentPlan = null; // { name, steps: [{text, status}], currentStep }
 
 // === Network capture (webRequest ring-buffer, per tab) ===
@@ -155,7 +161,7 @@ function hostFromUrl(raw) {
 // lead off-site, cross-origin iframes via frameSelector) are out of scope;
 // the confirm flow guards an honest agent, not a malicious one (hard
 // human-in-the-loop UI = part 3).
-async function policyGate(type, params, unattended = false) {
+async function policyGate(type, params, unattended = false, mgr) {
   if (!POLICY_GATED.has(type)) return null;
 
   // Hosts to judge: navigation-like commands by their DESTINATION,
@@ -173,7 +179,7 @@ async function policyGate(type, params, unattended = false) {
   }
   if (!hosts.length) {
     try {
-      const tabId = await resolveAgentTabId(params.tabId);
+      const tabId = await resolveAgentTabId(params.tabId, mgr);
       const h = hostFromUrl((await chrome.tabs.get(tabId))?.url);
       if (!h) return null; // non-web page out of scope v0
       hosts = [h];
@@ -216,7 +222,11 @@ async function policyGate(type, params, unattended = false) {
 
   if (verdict.action === 'confirm') {
     const digest = paramsDigest(type, params);
-    const grantKey = `${type}|${host}|${digest}`;
+    // Session-keyed grant (review 🟡1): without the session component, two
+    // sessions running the IDENTICAL command could steal each other's one-shot
+    // approval — the wrong session executes on a human approval given in the
+    // other session's chat, and the approved session loops asking again.
+    const grantKey = `${mgr.sessionKey}|${type}|${host}|${digest}`;
     const grant = approvedGrants.get(grantKey);
     if (grant && grant.expiresAt > Date.now()) {
       approvedGrants.delete(grantKey); // one-shot
@@ -224,7 +234,7 @@ async function policyGate(type, params, unattended = false) {
       return null;
     }
     const token = crypto.randomUUID();
-    pendingConfirmations.set(token, { type, host, digest, expiresAt: Date.now() + CONFIRM_TTL_MS });
+    pendingConfirmations.set(token, { type, host, digest, sessionKey: mgr.sessionKey, expiresAt: Date.now() + CONFIRM_TTL_MS });
     logAction(type, 'error', `🔐 policy confirm required @ ${host} — ${detail}`);
     return {
       requiresConfirmation: true,
@@ -265,22 +275,22 @@ function startKeepAlive() {
 chrome.runtime.onStartup.addListener(init);
 chrome.runtime.onInstalled.addListener(init);
 
-// Clean up agent tabs on tab removal
+// Clean up agent tabs on tab removal (every session's manager checks its own set)
 chrome.tabs.onRemoved.addListener((tabId) => {
-  tabGroupManager.onTabRemoved(tabId);
+  for (const m of sessionManagers.values()) m.onTabRemoved(tabId);
   networkBuffers.delete(tabId);
 });
 
 // Intercept new tabs opened by agent tabs (window.open, target="_blank")
-// Add them to the agent group automatically
+// Add them to the OWNING session's group automatically
 chrome.tabs.onCreated.addListener(async (tab) => {
   if (!tab.openerTabId) return;
-  // If the opener is an agent tab, add the new tab to agent group
-  if (tabGroupManager.agentTabIds.has(tab.openerTabId)) {
+  const owner = ownerOfTab(tab.openerTabId);
+  if (owner) {
     try {
-      await tabGroupManager.addTabToGroup(tab.id, tab.windowId);
-      tabGroupManager.agentTabIds.add(tab.id);
-      console.log('[Browser Agent v2] Auto-added child tab to agent group:', tab.id);
+      await owner.addTabToGroup(tab.id, tab.windowId);
+      owner.agentTabIds.add(tab.id);
+      console.log('[Browser Agent v2] Auto-added child tab to agent group:', tab.id, '(session:', owner.sessionKey + ')');
     } catch (error) {
       console.error('[Browser Agent v2] Failed to add child tab to group:', error);
     }
@@ -368,7 +378,7 @@ function handleConnect() {
     browserInfo: {
       name: 'chrome',
       version: navigator.userAgent,
-      agentVersion: '2.3.0'
+      agentVersion: '2.5.0'
     }
   });
 
@@ -460,13 +470,19 @@ function formatCommandDetail(command) {
 // === Command Execution (v2: Tab Group Isolated) ===
 
 async function executeCommand(command) {
-  const { type, params = {}, unattended } = command;
+  const { type, params = {}, unattended, sessionId } = command;
+
+  // v2.5: session-scoped tab groups. Every command resolves ITS session's
+  // manager and threads it explicitly through the handlers (no shared mutable
+  // "current manager" — parallel commands from two sessions interleave at
+  // await points, a global would race and leak tabs across sessions).
+  const mgr = managerFor(sessionId);
 
   // Safety v0 policy gate: deny throws, confirm returns a requiresConfirmation
   // result the agent must escalate to the human (browser_confirm), allow falls
   // through. unattended (set server-side by the bridge playbook-runner):
   // confirm degrades to deny — there is nobody to ask.
-  const gated = await policyGate(type, params, unattended === true);
+  const gated = await policyGate(type, params, unattended === true, mgr);
   if (gated) return gated;
 
   switch (type) {
@@ -478,29 +494,30 @@ async function executeCommand(command) {
         throw new Error('Confirmation token unknown or expired (TTL 2 min). Re-run the original command to get a fresh one.');
       }
       pendingConfirmations.delete(params.token);
-      approvedGrants.set(`${pc.type}|${pc.host}|${pc.digest}`, { expiresAt: Date.now() + CONFIRM_TTL_MS });
+      // Grant bound to the session that ISSUED the token (review 🟡1)
+      approvedGrants.set(`${pc.sessionKey}|${pc.type}|${pc.host}|${pc.digest}`, { expiresAt: Date.now() + CONFIRM_TTL_MS });
       logAction('confirm_action', 'success', `${pc.type} @ ${pc.host} — human: "${(params.humanApproval || '').substring(0, 80)}"`);
       return { approved: true, command: pc.type, origin: pc.host, validForMs: CONFIRM_TTL_MS, note: 'One-shot grant bound to the exact original parameters. Re-run the original command UNCHANGED now.' };
     }
 
     // --- Navigation ---
     case 'navigate':
-      return await navigateAgent(params.url, params.tabId);
+      return await navigateAgent(params.url, params.tabId, mgr);
 
     // --- Interaction ---
     case 'click':
-      return await clickElement(await resolveAgentTabId(params.tabId), params.selector);
+      return await clickElement(await resolveAgentTabId(params.tabId, mgr), params.selector);
 
     case 'type':
-      return await typeText(await resolveAgentTabId(params.tabId), params.selector, params.text);
+      return await typeText(await resolveAgentTabId(params.tabId, mgr), params.selector, params.text);
 
     // --- Screenshots (CDP — no focus hijack!) ---
     case 'screenshot':
-      return await takeScreenshot(await resolveAgentTabId(params.tabId), params);
+      return await takeScreenshot(await resolveAgentTabId(params.tabId, mgr), params);
 
     // --- Cookies (CDP) ---
     case 'get_all_cookies': {
-      const tabId = await resolveAgentTabId(params.tabId);
+      const tabId = await resolveAgentTabId(params.tabId, mgr);
       try { await chrome.debugger.attach({tabId}, '1.3'); } catch (_) {}
       try {
         const result = await chrome.debugger.sendCommand({tabId}, 'Network.getAllCookies', {});
@@ -514,149 +531,163 @@ async function executeCommand(command) {
 
     // --- JavaScript ---
     case 'execute_js':
-      return await executeJS(await resolveAgentTabId(params.tabId), params.code, params.frameSelector);
+      return await executeJS(await resolveAgentTabId(params.tabId, mgr), params.code, params.frameSelector);
 
     // --- Data extraction ---
     case 'extract':
-      return await extractData(await resolveAgentTabId(params.tabId), params.selector);
+      return await extractData(await resolveAgentTabId(params.tabId, mgr), params.selector);
 
     case 'get_text':
-      return await getText(await resolveAgentTabId(params.tabId), params.selector);
+      return await getText(await resolveAgentTabId(params.tabId, mgr), params.selector);
 
     // --- Scroll ---
     case 'scroll':
-      return await scrollPage(await resolveAgentTabId(params.tabId), params.direction, params.amount);
+      return await scrollPage(await resolveAgentTabId(params.tabId, mgr), params.direction, params.amount);
 
     // --- History ---
     case 'go_back':
-      return await goBack(await resolveAgentTabId(params.tabId));
+      return await goBack(await resolveAgentTabId(params.tabId, mgr));
 
     case 'go_forward':
-      return await goForward(await resolveAgentTabId(params.tabId));
+      return await goForward(await resolveAgentTabId(params.tabId, mgr));
 
-    // --- Tab management (agent group only) ---
+    // --- Tab management (agent group only, session-scoped) ---
     case 'list_tabs':
-      return await tabGroupManager.listAgentTabs();
+      return await mgr.listAgentTabs();
 
-    case 'list_all_tabs':
-      return await tabGroupManager.listAllTabs();
+    case 'list_all_tabs': {
+      // Global view: agent tabs of ANY session are marked, with their owner
+      const tabs = await chrome.tabs.query({});
+      return tabs.map(t => {
+        const owner = ownerOfTab(t.id);
+        return {
+          id: t.id,
+          url: t.url,
+          title: t.title,
+          active: t.active,
+          groupId: t.groupId,
+          isAgentTab: !!owner,
+          ...(owner ? { agentSession: owner.sessionKey } : {})
+        };
+      });
+    }
 
     case 'new_tab':
-      return await createAgentTab(params.url);
+      return await createAgentTab(params.url, mgr);
 
     case 'close_tab':
-      return await tabGroupManager.closeTab(params.tabId);
+      return await mgr.closeTab(params.tabId);
 
     case 'switch_tab':
-      return await switchAgentTab(params.tabId);
+      return await switchAgentTab(params.tabId, mgr);
 
     // --- Accessibility Tree (Phase 2) ---
     case 'read_page':
       return await accessibilityTree.readPage(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         { maxDepth: params.maxDepth, interactiveOnly: params.interactiveOnly }
       );
 
     case 'find':
       return await accessibilityTree.find(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.query,
         { maxResults: params.maxResults }
       );
 
     case 'form_input':
       return await accessibilityTree.formInput(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.ref,
         params.value
       );
 
     case 'click_ref':
       return await accessibilityTree.clickRef(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.ref
       );
 
     case 'scroll_to':
       return await accessibilityTree.scrollToRef(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.ref
       );
 
     // --- computer_use (Phase 2) ---
     case 'mouse_click':
       return await computerUse.click(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.x, params.y,
         { button: params.button, clickCount: params.clickCount, modifiers: params.modifiers }
       );
 
     case 'mouse_hover':
       return await computerUse.hover(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.x, params.y
       );
 
     case 'mouse_drag':
       return await computerUse.drag(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.x1, params.y1, params.x2, params.y2,
         { steps: params.steps }
       );
 
     case 'mouse_scroll':
       return await computerUse.scroll(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.x || 0, params.y || 0,
         params.deltaX || 0, params.deltaY || 0
       );
 
     case 'keyboard_type':
       return await computerUse.type(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.text
       );
 
     case 'keyboard_key':
       return await computerUse.key(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.key,
         params.modifiers || []
       );
 
     case 'screenshot_element':
       return await computerUse.screenshotElement(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         { ref: params.ref, selector: params.selector, padding: params.padding }
       );
 
     case 'screenshot_responsive':
       return await computerUse.screenshotResponsive(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.viewports
       );
 
     // --- Design Extraction (Phase 2) ---
     case 'extract_design':
       return await designExtractor.extractDesign(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.selector
       );
 
     case 'extract_palette':
       return await designExtractor.extractPalette(
-        await resolveAgentTabId(params.tabId)
+        await resolveAgentTabId(params.tabId, mgr)
       );
 
     case 'extract_section':
       return await designExtractor.extractSection(
-        await resolveAgentTabId(params.tabId),
+        await resolveAgentTabId(params.tabId, mgr),
         params.selector
       );
 
     case 'extract_seo':
       return await designExtractor.extractSEO(
-        await resolveAgentTabId(params.tabId)
+        await resolveAgentTabId(params.tabId, mgr)
       );
 
     // --- Plan Tracking ---
@@ -716,7 +747,7 @@ async function executeCommand(command) {
 
     // --- Cookies: set (CDP) ---
     case 'set_cookies': {
-      const tabId = await resolveAgentTabId(params.tabId);
+      const tabId = await resolveAgentTabId(params.tabId, mgr);
       try { await chrome.debugger.attach({ tabId }, '1.3'); } catch (_) {}
       try {
         const cookies = params.cookies || [];
@@ -729,15 +760,15 @@ async function executeCommand(command) {
 
     // --- Console log reading (MAIN-world capture buffer) ---
     case 'read_console':
-      return await readConsole(await resolveAgentTabId(params.tabId), params);
+      return await readConsole(await resolveAgentTabId(params.tabId, mgr), params);
 
     // --- Wait for condition (selector / text / timeout) ---
     case 'wait_for':
-      return await waitFor(await resolveAgentTabId(params.tabId), params);
+      return await waitFor(await resolveAgentTabId(params.tabId, mgr), params);
 
     // --- Network request reading (webRequest buffer) ---
     case 'read_network':
-      return await readNetwork(await resolveAgentTabId(params.tabId), params);
+      return await readNetwork(await resolveAgentTabId(params.tabId, mgr), params);
 
     // --- Download a file (chrome.downloads) ---
     case 'download':
@@ -745,29 +776,35 @@ async function executeCommand(command) {
 
     // --- Upload file(s) into a <input type=file> (CDP) ---
     case 'upload_file':
-      return await uploadFile(await resolveAgentTabId(params.tabId), params);
+      return await uploadFile(await resolveAgentTabId(params.tabId, mgr), params);
 
     // --- Self-healing action (cache selector → fallback to semantic find) ---
     case 'act':
-      return await selfHealAct(await resolveAgentTabId(params.tabId), params);
+      return await selfHealAct(await resolveAgentTabId(params.tabId, mgr), params);
 
     // --- Performance metrics (Core Web Vitals + navigation timing) ---
     case 'performance':
-      return await getPerformance(await resolveAgentTabId(params.tabId), params);
+      return await getPerformance(await resolveAgentTabId(params.tabId, mgr), params);
 
     // --- Observe: ranked interactive elements ("what can I do here") ---
     case 'observe':
-      return await observePage(await resolveAgentTabId(params.tabId), params);
+      return await observePage(await resolveAgentTabId(params.tabId, mgr), params);
 
     // --- Native JS dialog handling (arm one-shot: alert/confirm/prompt) ---
     case 'handle_dialog':
-      return await handleDialog(await resolveAgentTabId(params.tabId), params.accept !== false, params.promptText);
+      return await handleDialog(await resolveAgentTabId(params.tabId, mgr), params.accept !== false, params.promptText);
 
-    // --- Cleanup ---
-    case 'cleanup':
-      await tabGroupManager.cleanup();
-      await cdpScreenshot.cleanup();
-      return { cleaned: true };
+    // --- Cleanup (this session only; v1 has no auto-reaper) ---
+    case 'cleanup': {
+      // Snapshot own tabs BEFORE mgr.cleanup() clears the set — the CDP
+      // detach below must be scoped to THIS session's tabs only (review 🟡2:
+      // a global detach would kill another session's in-flight capture).
+      const ownTabs = new Set(mgr.agentTabIds);
+      await mgr.cleanup();
+      sessionManagers.delete(mgr.sessionKey);
+      await cdpScreenshot.cleanup(ownTabs);
+      return { cleaned: true, session: mgr.sessionKey };
+    }
 
     default:
       throw new Error(`Unknown command type: ${type}`);
@@ -829,14 +866,19 @@ async function handleDialog(tabId, accept, promptText) {
  * Resolve tab ID: if provided, verify it's an agent tab.
  * If not provided, get active agent tab or create one.
  */
-async function resolveAgentTabId(tabId) {
+async function resolveAgentTabId(tabId, mgr) {
+  // SW-restart recovery (review 🟢7): in-memory state is wiped on Service
+  // Worker restart but the session's group survives in the window — re-adopt
+  // it (exact-title match) before resolving. No-op when tabs are known.
+  if (mgr.agentTabIds.size === 0) await mgr.ensureGroup().catch(() => { /* none to adopt */ });
+
   if (tabId) {
-    const tab = await tabGroupManager.getAgentTab(tabId);
+    const tab = await mgr.getAgentTab(tabId);
     return tab.id;
   }
 
   // Try to get existing agent tab (with a real URL, not about:blank)
-  const agentTab = await tabGroupManager.getActiveAgentTab();
+  const agentTab = await mgr.getActiveAgentTab();
   if (agentTab && agentTab.url && agentTab.url !== 'about:blank') return agentTab.id;
 
   // If we have an about:blank tab, return it (navigate will fix it)
@@ -847,8 +889,8 @@ async function resolveAgentTabId(tabId) {
 }
 
 // --- Navigation (creates tab in agent group if needed) ---
-async function navigateAgent(url, tabId) {
-  const result = await tabGroupManager.navigate(url, tabId);
+async function navigateAgent(url, tabId, mgr) {
+  const result = await mgr.navigate(url, tabId);
   return { url, tabId: result.tabId, status: result.status };
 }
 
@@ -1427,13 +1469,13 @@ async function goForward(tabId) {
 }
 
 // --- Agent Tab Operations ---
-async function createAgentTab(url) {
-  const tab = await tabGroupManager.createTab(url);
-  return { tabId: tab.id, url: tab.url || url, groupId: tabGroupManager.groupId };
+async function createAgentTab(url, mgr) {
+  const tab = await mgr.createTab(url);
+  return { tabId: tab.id, url: tab.url || url, groupId: mgr.groupId };
 }
 
-async function switchAgentTab(tabId) {
-  const tab = await tabGroupManager.getAgentTab(tabId);
+async function switchAgentTab(tabId, mgr) {
+  const tab = await mgr.getAgentTab(tabId);
   await chrome.tabs.update(tab.id, { active: true });
   return { tabId: tab.id, active: true };
 }
@@ -1482,15 +1524,22 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getStatus') {
     (async () => {
-      const agentTabs = await tabGroupManager.listAgentTabs();
+      // Aggregate across all session managers (side panel shows the whole picture)
+      const agentTabs = [];
+      for (const m of sessionManagers.values()) {
+        agentTabs.push(...await m.listAgentTabs());
+      }
+      const groupIds = [...sessionManagers.values()].map(m => m.groupId).filter(g => g != null);
       sendResponse({
         connected: websocket && websocket.readyState === WebSocket.OPEN,
         profileId,
         alias: profileAlias,
-        version: '2.3.0',
+        version: '2.5.0',
         agentTabs: agentTabs.length,
         agentTabsList: agentTabs,
-        groupId: tabGroupManager.groupId,
+        groupId: groupIds[0] ?? null,
+        groupIds,
+        sessions: sessionManagers.size,
         recording: recorder.getStatus(),
         plan: currentPlan
       });
