@@ -12,12 +12,17 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import { randomUUID } from 'crypto';
 import { BridgeClient } from './bridge-client.js';
 import { createTools, executeToolCall } from './tools.js';
 
 // Initialize Bridge Client
 const BRIDGE_URL = process.env.BRIDGE_URL || 'http://localhost:18793';
-const bridgeClient = new BridgeClient(BRIDGE_URL);
+// Stable per-session ID: one MCP server process == one Claude session (stdio
+// transport). The extension scopes tab groups by this — parallel sessions on
+// the same profile get separate groups and can't hijack each other's tabs.
+const SESSION_ID = randomUUID();
+const bridgeClient = new BridgeClient(BRIDGE_URL, SESSION_ID);
 
 // Initialize MCP Server
 const server = new Server(

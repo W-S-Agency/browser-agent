@@ -1,14 +1,36 @@
 // Tab Group Manager
 // Isolates agent tabs from user tabs using Chrome Tab Groups API
 // Agent works in its own group — never touches user's tabs
+//
+// v2.5: SESSION-SCOPED. One TabGroupManager per MCP session (sessionId travels
+// inside every command). Each session gets its OWN tab group with a unique
+// title — two parallel Claude sessions on the same profile no longer share a
+// group or hijack each other's tabs. Commands without a sessionId (older MCP
+// server, playbook-runner) fall back to the shared 'default' manager, which
+// behaves exactly like the pre-2.5 singleton.
 
 const AGENT_GROUP_TITLE = '🤖 Agent';
-const AGENT_GROUP_COLOR = 'blue';
+// Chrome's full tab-group palette; per-session color picked by stable hash.
+const GROUP_COLORS = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange', 'grey'];
 
 class TabGroupManager {
-  constructor() {
+  constructor(sessionKey = 'default') {
+    this.sessionKey = sessionKey;
+    // Default (legacy) sessions keep the exact pre-2.5 title so an updated
+    // extension adopts groups created before the update.
+    this.title = sessionKey === 'default'
+      ? AGENT_GROUP_TITLE
+      : `${AGENT_GROUP_TITLE} · ${sessionKey.slice(0, 6)}`;
+    this.color = GROUP_COLORS[TabGroupManager.hashKey(sessionKey) % GROUP_COLORS.length];
     this.groupId = null;
     this.agentTabIds = new Set();
+  }
+
+  // Stable non-negative hash for color selection
+  static hashKey(s) {
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    return h >>> 0;
   }
 
   /**
@@ -27,8 +49,14 @@ class TabGroupManager {
       }
     }
 
-    // Look for existing agent group in any window
-    const groups = await chrome.tabGroups.query({ title: AGENT_GROUP_TITLE });
+    // Look for THIS SESSION's group (exact title match). After a Service
+    // Worker restart the in-memory state is gone but the group survives in
+    // the window — re-adopt it instead of creating a duplicate. The title is
+    // unique per session, so this can never capture another session's group
+    // (the pre-2.5 bug: query({title:'🤖 Agent'}) + groups[0] grabbed ANY
+    // agent group, including one belonging to a parallel session).
+    const groups = (await chrome.tabGroups.query({ title: this.title }))
+      .filter(g => g.title === this.title);
     if (groups.length > 0) {
       this.groupId = groups[0].id;
       // Sync existing tabs in this group
@@ -64,6 +92,11 @@ class TabGroupManager {
    * Add an existing tab to the agent group
    */
   async addTabToGroup(tabId, windowId) {
+    // Re-adopt this session's surviving group first (SW restart case)
+    if (this.groupId === null) {
+      await this.ensureGroup(windowId).catch(() => { /* fall through to create */ });
+    }
+
     if (this.groupId !== null) {
       try {
         await chrome.tabs.group({ tabIds: [tabId], groupId: this.groupId });
@@ -77,10 +110,10 @@ class TabGroupManager {
     // Create new group with this tab
     this.groupId = await chrome.tabs.group({ tabIds: [tabId] });
 
-    // Style the group
+    // Style the group (per-session title + color)
     await chrome.tabGroups.update(this.groupId, {
-      title: AGENT_GROUP_TITLE,
-      color: AGENT_GROUP_COLOR,
+      title: this.title,
+      color: this.color,
       collapsed: false
     });
 
@@ -210,7 +243,7 @@ class TabGroupManager {
    */
   async closeTab(tabId) {
     if (!this.agentTabIds.has(tabId)) {
-      throw new Error(`Tab ${tabId} is not an agent tab. Cannot close user tabs.`);
+      throw new Error(`Tab ${tabId} is not an agent tab of this session. Cannot close user tabs or another session's tabs.`);
     }
 
     await chrome.tabs.remove(tabId);
@@ -240,5 +273,30 @@ class TabGroupManager {
   }
 }
 
-// Export singleton
-const tabGroupManager = new TabGroupManager();
+// === Session-scoped registry (v2.5) ===
+// One manager (→ one tab group) per MCP session. Commands carry sessionId;
+// missing/empty sessionId (older MCP server, bridge playbook-runner) maps to
+// the shared 'default' manager — exact pre-2.5 behavior, fully backward
+// compatible. v1: no auto-reaper — a session's manager lives until
+// browser_cleanup for that session or SW restart (empty groups are cheap and
+// visible; explicit cleanup removes them).
+const sessionManagers = new Map(); // sessionKey -> TabGroupManager
+
+function managerFor(sessionId) {
+  const key = (typeof sessionId === 'string' && sessionId.trim()) ? sessionId.trim() : 'default';
+  let m = sessionManagers.get(key);
+  if (!m) {
+    m = new TabGroupManager(key);
+    sessionManagers.set(key, m);
+  }
+  return m;
+}
+
+// Which session (manager) owns a given tab — for global listeners
+// (onCreated child-tab adoption) and cross-session tab marking.
+function ownerOfTab(tabId) {
+  for (const m of sessionManagers.values()) {
+    if (m.agentTabIds.has(tabId)) return m;
+  }
+  return null;
+}

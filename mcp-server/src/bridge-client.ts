@@ -34,8 +34,13 @@ export class BridgeClient {
   private client: AxiosInstance;
   private authToken: string | null = null;
   private tokenPromise: Promise<string | null> | null = null;
+  private sessionId: string | null;
 
-  constructor(baseURL: string) {
+  constructor(baseURL: string, sessionId?: string) {
+    // v2.5: session-scoped tab groups. The ID rides INSIDE the command object,
+    // so the bridge forwards it untouched (zero bridge changes) and the
+    // extension scopes its TabGroupManager by it. Older extensions ignore it.
+    this.sessionId = sessionId || null;
     this.client = axios.create({
       baseURL,
       timeout: 35000,
@@ -78,7 +83,7 @@ export class BridgeClient {
       try {
         const token = await this.getAuthToken();
         const response = await this.client.post<CommandResult>('/execute', {
-          command,
+          command: this.sessionId ? { ...command, sessionId: this.sessionId } : command,
           profileId,
         }, { headers: token ? { 'X-Auth-Token': token } : {} });
 
