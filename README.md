@@ -73,7 +73,7 @@ chmod +x install-launchd.sh
 ## 🔧 Components
 
 ### 1. MCP Server (`mcp-server/`)
-- 50 browser automation tools (v2.1.0)
+- 55 browser automation tools in 21 categories (v2.5.0)
 - stdio transport for WS Workspace
 - TypeScript with @modelcontextprotocol/sdk
 
@@ -104,7 +104,7 @@ All Chromium-based browsers supported via Chrome Extension API.
 
 ## 📊 Available Tools
 
-> 📖 **Full reference:** [`TOOLS.md`](./TOOLS.md) — all 50 tools with parameters, auto-generated from `mcp-server/src/tools.ts` (`npm run docs:tools`).
+> 📖 **Full reference:** [`TOOLS.md`](./TOOLS.md) — all 55 tools with parameters, auto-generated from `mcp-server/src/tools.ts` (`npm run docs:tools`).
 
 All tools support **profile aliases** - use friendly names like "work" or "personal" instead of full profile IDs.
 
@@ -136,7 +136,14 @@ browser_close_tab({ profileId: "work", tabId: 12345 })
 browser_list_profiles()
 ```
 
-### New in v2.1.0 (Sprints 1–5)
+### New since v2.1.0 (highlights — full list in TOOLS.md)
+
+- **v2.5.0 — Session-scoped tab groups:** each MCP session works in its OWN tab group (`🤖 Agent · {id}`, own color); parallel sessions on one profile cannot touch each other's tabs.
+- **v2.4.0 — `browser_batch`:** run N tools in one LLM round-trip.
+- **v2.3.0 — Safety v0:** loopback-only bridge + auth, policy.json (allow/confirm/deny per origin×command), `browser_confirm`, unattended playbook runner.
+- **v2.2.0 — Sprint 6 + performance-passive:** `fill_form`, `extract_validated`, `handle_dialog`; `browser_performance {activate:true}` measures FCP/LCP without stealing focus.
+
+### v2.1.0 (Sprints 1–5)
 
 ```javascript
 // JS / iframe — top-level return & await; run inside an iframe (cross-origin too)
@@ -301,4 +308,4 @@ Internal use only - WS Workspace Team
 
 **Status:** ✅ Production-ready для Windows & macOS
 
-**Version:** 1.0.0 (February 2026)
+**Version:** 2.5.0 (July 2026) — see [Releases](https://github.com/W-S-Agency/browser-agent/releases) and [TOOLS.md](./TOOLS.md)
